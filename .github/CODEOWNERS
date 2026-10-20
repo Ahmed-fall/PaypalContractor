@@ -1,0 +1,33 @@
+# CODEOWNERS — The Financial Detective
+# CODEOWNERS is last-match-wins, so broad directories come first and the
+# canonical P4 overrides (contracts, fixtures, infra) come last.
+
+# Person 1 — Backend & PayPal
+backend/requirements.txt      @NourAtef112
+backend/app/main.py           @NourAtef112
+backend/app/config.py         @NourAtef112
+backend/app/db/               @NourAtef112
+backend/app/api/              @NourAtef112
+backend/app/services/         @NourAtef112
+backend/tests/unit_paypal/    @NourAtef112
+
+# Person 2 — AI & Compliance
+backend/app/ai/               @yassinalamelden
+backend/tests/unit_ai/        @yassinalamelden
+
+# Person 3 — Frontend & AG Grid
+frontend/                     @MoamenFouad
+
+# Person 4 — Integration, QA, Security & Submission (canonical contracts + infra)
+LICENSE                       @Ahmed-fall
+README.md                     @Ahmed-fall
+.env.example                  @Ahmed-fall
+docker-compose.yml            @Ahmed-fall
+render.yaml                   @Ahmed-fall
+.github/                      @Ahmed-fall
+docs/                         @Ahmed-fall
+scripts/                      @Ahmed-fall
+shared/                       @Ahmed-fall
+backend/app/schemas/          @Ahmed-fall
+backend/tests/integration/    @Ahmed-fall
+frontend/src/types/           @Ahmed-fall

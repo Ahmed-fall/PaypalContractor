@@ -1,0 +1,8 @@
+{
+  "milestone_id": "ms_01",
+  "simulated_amount": "850.00",
+  "currency": "USD",
+  "simulated_payment_date": "2026-10-20",
+  "payer_email": "sb-buyer@personal.example.com",
+  "idempotency_key": "sim_req_001"
+}

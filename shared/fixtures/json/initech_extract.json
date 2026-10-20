@@ -1,0 +1,42 @@
+{
+  "contract_id": "cnt_01J9ZB3",
+  "status": "DRAFT",
+  "source_filename": "Initech_MultiMilestone.pdf",
+  "extraction": {
+    "contract_title": "Statement of Work - Initech LLC",
+    "client_name": "Initech LLC",
+    "client_paypal_email": "ap@initech.example.com",
+    "currency": "USD",
+    "late_fee_percentage": "5.00",
+    "grace_period_days": 5,
+    "allow_partial_payments": true,
+    "penalty_clause_quote": "Section 6.1: A late fee of 5.00% of the milestone amount applies to any payment received more than 5 days past the milestone due date.",
+    "milestones": [
+      {
+        "milestone_id": "ms_03",
+        "milestone_code": "MS-01",
+        "title": "Discovery & Requirements",
+        "expected_amount": "1200.00",
+        "due_date": "2026-10-10",
+        "source_clause_quote": "Section 4.1 (MS-01): Discovery & Requirements - $1,200.00 USD, due on or before October 10, 2026."
+      },
+      {
+        "milestone_id": "ms_04",
+        "milestone_code": "MS-02",
+        "title": "Implementation Sprint 1",
+        "expected_amount": "1800.00",
+        "due_date": "2026-11-10",
+        "source_clause_quote": "Section 4.2 (MS-02): Implementation Sprint 1 - $1,800.00 USD, due on or before November 10, 2026."
+      },
+      {
+        "milestone_id": "ms_05",
+        "milestone_code": "MS-03",
+        "title": "Final Delivery & Handover",
+        "expected_amount": "900.00",
+        "due_date": "2026-12-10",
+        "source_clause_quote": "Section 4.3 (MS-03): Final Delivery & Handover - $900.00 USD, due on or before December 10, 2026."
+      }
+    ],
+    "extraction_confidence": 0.94
+  }
+}

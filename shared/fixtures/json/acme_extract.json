@@ -1,0 +1,26 @@
+{
+  "contract_id": "cnt_01J9Z8A",
+  "status": "DRAFT",
+  "source_filename": "Acme_Standard.pdf",
+  "extraction": {
+    "contract_title": "Master Software Development Agreement - Acme Corp",
+    "client_name": "Acme Corp",
+    "client_paypal_email": "sb-buyer@personal.example.com",
+    "currency": "USD",
+    "late_fee_percentage": "5.00",
+    "grace_period_days": 3,
+    "allow_partial_payments": false,
+    "penalty_clause_quote": "Section 4.2: Any payment received below the milestone amount or more than 3 days past the due date incurs a mandatory 5.00% administrative late fee on the full milestone balance.",
+    "milestones": [
+      {
+        "milestone_id": "ms_01",
+        "milestone_code": "MS-01",
+        "title": "Phase 1: Backend Architecture Delivery",
+        "expected_amount": "1000.00",
+        "due_date": "2026-10-15",
+        "source_clause_quote": "Section 3.1: Client shall pay $1,000.00 USD upon Phase 1 delivery on or before October 15, 2026."
+      }
+    ],
+    "extraction_confidence": 0.98
+  }
+}

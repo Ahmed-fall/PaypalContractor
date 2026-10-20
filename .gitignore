@@ -1,0 +1,36 @@
+# Secrets & local env — never commit
+.env
+.env.*
+!.env.example
+*.token
+paypal_token
+
+# Planning docs live outside the repo; never commit Office files
+*.docx
+*.doc
+
+# Local AI-tooling config (machine-specific absolute paths)
+opencode.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.db
+*.sqlite3
+
+# Node / frontend
+node_modules/
+dist/
+build/
+.vite/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

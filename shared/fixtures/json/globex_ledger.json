@@ -1,0 +1,38 @@
+{
+  "summary": {
+    "total_expected": "2500.00",
+    "total_captured": "2500.00",
+    "total_shortfall": "0.00",
+    "total_penalties": "175.00",
+    "total_remediation_invoiced": "0.00"
+  },
+  "rows": [
+    {
+      "milestone_id": "ms_02",
+      "contract_id": "cnt_01J9ZA2",
+      "contract_title": "Consulting Services Agreement - Globex Industries",
+      "client_name": "Globex Industries Inc.",
+      "client_paypal_email": "finance@globex.example.com",
+      "milestone_code": "MS-01",
+      "milestone_title": "Q3 Security Audit Report",
+      "expected_amount": "2500.00",
+      "captured_amount": "2500.00",
+      "captured_currency": "USD",
+      "shortfall_amount": "0.00",
+      "penalty_amount": "175.00",
+      "total_remediation_amount": "175.00",
+      "currency": "USD",
+      "due_date": "2026-11-01",
+      "captured_at": "2026-11-04T09:05:00Z",
+      "paypal_order_id": "7XY88021KL554201M",
+      "paypal_capture_id": "3AB11290PQ882301K",
+      "webhook_verified": true,
+      "discrepancy_type": "LATE_PAYMENT",
+      "discrepancy_status": "PENDING_APPROVAL",
+      "discrepancy_id": "dsc_01J9ZA5",
+      "violated_clause_quote": "Section 5 (Late Payment): A late fee of 7.00% of the invoice total shall apply to any payment received after the due date. No grace period is granted.",
+      "ai_audit_summary": "The $2,500.00 MS-01 milestone was paid in full but arrived on 2026-11-04, 3 days after the 2026-11-01 due date. This engagement grants no grace period, so Section 5 imposes a 7% ($175.00) late fee.",
+      "remediation_invoice": null
+    }
+  ]
+}

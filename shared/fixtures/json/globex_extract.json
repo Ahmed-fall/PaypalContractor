@@ -1,0 +1,26 @@
+{
+  "contract_id": "cnt_01J9ZA2",
+  "status": "DRAFT",
+  "source_filename": "Globex_LateFee.pdf",
+  "extraction": {
+    "contract_title": "Consulting Services Agreement - Globex Industries",
+    "client_name": "Globex Industries Inc.",
+    "client_paypal_email": "finance@globex.example.com",
+    "currency": "USD",
+    "late_fee_percentage": "7.00",
+    "grace_period_days": 0,
+    "allow_partial_payments": false,
+    "penalty_clause_quote": "Section 5 (Late Payment): A late fee of 7.00% of the invoice total shall apply to any payment received after the due date. No grace period is granted.",
+    "milestones": [
+      {
+        "milestone_id": "ms_02",
+        "milestone_code": "MS-01",
+        "title": "Q3 Security Audit Report",
+        "expected_amount": "2500.00",
+        "due_date": "2026-11-01",
+        "source_clause_quote": "Section 3.1: A single fixed fee of $2,500.00 USD is due upon delivery of the Q3 Security Audit Report on or before November 1, 2026."
+      }
+    ],
+    "extraction_confidence": 0.96
+  }
+}

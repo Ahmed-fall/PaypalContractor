@@ -1,0 +1,38 @@
+{
+  "summary": {
+    "total_expected": "1000.00",
+    "total_captured": "850.00",
+    "total_shortfall": "150.00",
+    "total_penalties": "50.00",
+    "total_remediation_invoiced": "0.00"
+  },
+  "rows": [
+    {
+      "milestone_id": "ms_01",
+      "contract_id": "cnt_01J9Z8A",
+      "contract_title": "Master Software Development Agreement - Acme Corp",
+      "client_name": "Acme Corp",
+      "client_paypal_email": "sb-buyer@personal.example.com",
+      "milestone_code": "MS-01",
+      "milestone_title": "Phase 1: Backend Architecture Delivery",
+      "expected_amount": "1000.00",
+      "captured_amount": "850.00",
+      "captured_currency": "USD",
+      "shortfall_amount": "150.00",
+      "penalty_amount": "50.00",
+      "total_remediation_amount": "200.00",
+      "currency": "USD",
+      "due_date": "2026-10-15",
+      "captured_at": "2026-10-20T14:22:10Z",
+      "paypal_order_id": "5O190127TN364715T",
+      "paypal_capture_id": "2GG279541U471931P",
+      "webhook_verified": true,
+      "discrepancy_type": "UNDERPAID_AND_LATE",
+      "discrepancy_status": "PENDING_APPROVAL",
+      "discrepancy_id": "dsc_01J9Z99",
+      "violated_clause_quote": "Section 4.2: Any payment received below the milestone amount or more than 3 days past the due date incurs a mandatory 5.00% administrative late fee on the full milestone balance.",
+      "ai_audit_summary": "Client paid $850.00 against the $1,000.00 MS-01 milestone ($150.00 shortfall) 5 days past the Oct 15 due date, exceeding the 3-day grace period and triggering a 5% ($50.00) late fee.",
+      "remediation_invoice": null
+    }
+  ]
+}

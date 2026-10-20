@@ -1,0 +1,38 @@
+{
+  "summary": {
+    "total_expected": "2500.00",
+    "total_captured": "0.00",
+    "total_shortfall": "0.00",
+    "total_penalties": "0.00",
+    "total_remediation_invoiced": "0.00"
+  },
+  "rows": [
+    {
+      "milestone_id": "ms_02",
+      "contract_id": "cnt_01J9ZA2",
+      "contract_title": "Consulting Services Agreement - Globex Industries",
+      "client_name": "Globex Industries Inc.",
+      "client_paypal_email": "finance@globex.example.com",
+      "milestone_code": "MS-01",
+      "milestone_title": "Q3 Security Audit Report",
+      "expected_amount": "2500.00",
+      "captured_amount": "2300.00",
+      "captured_currency": "EUR",
+      "shortfall_amount": "0.00",
+      "penalty_amount": "0.00",
+      "total_remediation_amount": "0.00",
+      "currency": "USD",
+      "due_date": "2026-11-01",
+      "captured_at": "2026-11-02T10:00:00Z",
+      "paypal_order_id": "2KM44109NP773301Q",
+      "paypal_capture_id": "6TT99210UV115501R",
+      "webhook_verified": true,
+      "discrepancy_type": "CURRENCY_MISMATCH",
+      "discrepancy_status": "PENDING_APPROVAL",
+      "discrepancy_id": "dsc_01J9ZA9",
+      "violated_clause_quote": "Section 6.1: All payments must be settled in United States Dollars (USD). A payment received in any other currency is not deemed compliant until the full USD equivalent has been received.",
+      "ai_audit_summary": "The MS-01 milestone was settled in EUR (€2,300.00) rather than the contractually required USD. Section 6.1 treats any non-USD settlement as non-compliant until the full USD equivalent is received, so the milestone remains outstanding pending a USD settlement.",
+      "remediation_invoice": null
+    }
+  ]
+}

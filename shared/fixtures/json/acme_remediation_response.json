@@ -1,0 +1,16 @@
+{
+  "discrepancy_id": "dsc_01J9Z99",
+  "discrepancy_status": "REMEDIATED",
+  "remediation_invoice": {
+    "paypal_invoice_id": "INV2-X4Y5-Z6A7-B8C9-D0E1",
+    "paypal_invoice_number": "FD-2026-0001",
+    "status": "SENT",
+    "total_amount": "200.00",
+    "currency": "USD",
+    "recipient_email": "sb-buyer@personal.example.com",
+    "payer_view_url": "https://www.sandbox.paypal.com/invoice/p/#X4Y5Z6A7B8C9D0E1",
+    "qr_code_base64": "iVBORw0KGgoAAAANSUhEUgAAAMgAAADIAQMAAACXljzdAAAAA1BMVEX///+nxBvIAAAA",
+    "sent_at": "2026-10-20T14:23:05Z",
+    "last_reminded_at": null
+  }
+}
