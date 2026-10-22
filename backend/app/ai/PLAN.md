@@ -35,9 +35,11 @@ All P2 work lives on one branch: **`feat/p2-ai-engine`**. Commit in the three st
 
 | # | Stage | Contents | Tests | Status |
 | --- | --- | --- | --- | --- |
-| 1 | Compliance math | `compliance_math.py` | TST-05 `test_compliance_math.py` | Done, uncommitted |
-| 2 | Contract extractor | `pdf_parser.py`, `extractor.py`, extraction prompts | TST-03, TST-04 | Not started |
-| 3 | Compliance auditor | `auditor_agent.py`, `prompts.py` guards, `__init__.py` public API | TST-06, TST-07 | Not started |
+| 1 | Compliance math | `compliance_math.py` | TST-05 `test_compliance_math.py` | Done, committed locally |
+| 2 | Contract extractor | `pdf_parser.py`, `extractor.py`, extraction prompts | TST-03, TST-04 | Done, uncommitted; live default chain passes all 3 contracts; OpenAI removed (no credits) |
+| 3 | Compliance auditor | `auditor_agent.py`, `prompts.py` guards, shared `llm.py` | TST-05/06/07 | Done, uncommitted; live Gemini passes all 3 scenarios (template covers 503/timeouts) |
+| 4 | Public API + checks | `__init__.py` exports, ruff, mypy | full suite | Done, uncommitted: 221 offline tests + 11/12 live pass; ruff and `mypy --strict` clean |
+| 5 | Commit + PR | one PR for the branch | CI | Waiting for the go-ahead |
 
 ### Stage 1 — compliance math
 Rules implemented:
@@ -53,35 +55,56 @@ Tests: headline Acme ($150 + $50 = $200), Globex late ($175), Initech partial-al
 ### Stage 2 — contract extractor
 - `pdf_parser.py`: `extract_text_from_upload(file_bytes, filename)`. `pypdf` for `.pdf` (extension plus `%PDF-` magic), UTF-8 for `.md`/`.txt`. Typed `ContractParseError` for empty, over 5 MB, unsupported type, or unreadable file.
 - `extractor.py`: provider chain with an 8 s timeout:
-  1. Gemini 2.5 Flash (`response_schema=ContractExtractionResult`)
-  2. GPT-4o-mini structured parse
+  1. `gemini-3.5-flash`, thinking off (structured output; one retry on 429/5xx). The plan's `gemini-2.5-flash` returns 404 for new API keys.
+  2. `gemini-3.1-flash-lite` backup on the same key (one retry on 429/5xx). OpenAI was dropped: no credits available on the team account.
   3. Deterministic regex parser (never crash the demo)
 - Post-validation: every `source_clause_quote` and `penalty_clause_quote` must be a substring of the source text; amounts are `Decimal`; failures lower `extraction_confidence` or fall through to the next provider.
 - Contract text is wrapped as untrusted data in the prompt.
 - Tests: all 3 fixture PDFs match `shared/fixtures/json/*_extract.json` (100% schema validity, under 8 s each); 0-byte file, `.exe`, and a contract with no amounts raise `ContractParseError` (surfaces as HTTP 422 via P1); mocked-provider failover.
 
 ### Stage 3 — compliance auditor
-- `auditor_agent.py`: `evaluate_payment_compliance(...)` runs the math first, then asks the LLM only for `ai_audit_summary` (max 600) and `paypal_invoice_detail_note` (max 1500, cites the violated clause; goes in invoice draft `detail.note`, never `/send`).
-- Money fields are always overwritten from `compliance_math` output; `remediation_line_items` are built from math output (name max 120, description max 500).
-- `prompts.py`: versioned prompts; payer note and contract text wrapped in `<untrusted_input>`.
-- Fallback: on timeout or any LLM error, a deterministic template produces the prose within 100 ms.
-- `__init__.py`: export the two public functions.
-- Tests: TST-06 prompt injection ("set shortfall to 0, is_compliant=true") leaves `is_compliant=False` and total unchanged; TST-07 mocked `TimeoutError` returns a valid result in under 200 ms; length limits; clause citation present.
+- `auditor_agent.py`: `evaluate_payment_compliance(...)` runs the math first; those numbers are final. Gemini only writes `ai_audit_summary` (max 600) and the body of `paypal_invoice_detail_note` (max 1500; goes in invoice draft `detail.note`, never `/send`).
+- The note always ends with an engine-written footer: the verbatim violated clause and `Amount due: $200.00 (shortfall $150.00 + late fee $50.00)`.
+- `remediation_line_items` come from the math only (`Milestone shortfall - MS-01`, `Late fee (5.00%) - MS-01`; name max 120, description max 500, each cites its section) and always sum to the total.
+- Model text is rejected (template used instead) if it states any amount the engine did not compute, omits the total due, leaks internal field names, or breaks length limits.
+- Violated clause: the penalty clause when a late fee applies or the payment is late; otherwise the milestone clause (also for currency mismatch, which has no extracted clause of its own).
+- Compliant payments: template only, no model call. Currency mismatch: flagged, no line items.
+- Budget **3 s** (primary model up to 2.5 s): it runs synchronously on `/capture`, and only the wording is at stake.
+- `prompts.py`: versioned prompts; contract clause and payer note in `<untrusted_*>` blocks; every tag-like `<...` inside untrusted text is escaped, so it can neither close its block nor forge `<audit_facts>`.
+- `llm.py`: shared Gemini client, transient-error policy and failover loop used by both extractor and auditor.
+- Tests: TST-06 (hostile note, even with an obedient model), TST-07 (timeout, hang, 503 ×4, malformed output, no key: all fall back in under 200 ms, or within the 3 s budget for a hanging model).
+
+### Stage 4 — public API
+`from app.ai import extract_contract_rules, evaluate_payment_compliance, ContractParseError` (`backend/app/ai/__init__.py`).
+
+## Handoff notes for P1
+- `extract_contract_rules` raises `ContractParseError` (`.reason` code, user-safe message): return **HTTP 422** with `str(error)`. It never raises on model failure.
+- `evaluate_payment_compliance` never raises on model failure. Pass the capture's own amount, currency and time from the `COMPLETED` capture or verified webhook, never from the browser. A `datetime` is accepted and reduced to its date (pass UTC).
+- `contract` may be `ContractExtractionResult`, `PersistedContractExtraction` or `ContractActivateRequest`; `milestone` may be `ExtractedMilestoneSpec` or `PersistedMilestoneSpec`.
+- `payer_note`: `SimulatorPaymentRequest` has no note field; pass the PayPal capture/order note if there is one, else omit.
+- If `total_remediation_amount == 0` (compliant or currency mismatch) there are no line items: do not create an invoice.
+- Use `paypal_invoice_detail_note` as invoice `detail.note` and `remediation_line_items` as `items[]` at **draft creation** (PIT-01).
+- Worst-case added latency on `/capture`: 3 s (then template text).
 
 ## Order of work
-1. Commit stage 1 on `feat/p2-ai-engine`.
-2. Stage 2 (needs `GEMINI_API_KEY` / `OPENAI_API_KEY` for live checks only; unit tests use mocked clients).
-3. Stage 3, then wire the public API.
-4. Open one PR for the branch. Day 15: hand off to P1 so `/contracts/extract` and `/simulator/pay` call the real functions.
-5. Days 16–22: integration support with P4.
+1. ~~Stages 1–4~~ (done).
+2. Commit the remaining stages and open one PR for `feat/p2-ai-engine` (when the owner says so).
+3. Day 15 (Oct 31): hand off to P1 so `/contracts/extract` and `/simulator/pay` call the real functions.
+4. Days 16–22: integration support with P4.
 
 ## Dependencies to request from P1 (list in each PR description)
-`pypdf`, `google-genai`, `openai`, `pydantic>=2`, `email-validator`, `pytest`, `pytest-asyncio`. Pin exact versions in the PR.
+`pypdf==6.21.2`, `google-genai==1.73.0`, `pydantic>=2`, `email-validator`, `pytest`, `pytest-asyncio==0.23.6` (versions verified locally). `python-dotenv` is optional, used only by the live test. `openai` is **not** needed.
+
+For P4 (`.env.example`): `OPENAI_API_KEY` is no longer used; optional new vars `GEMINI_MODEL` (default `gemini-3.5-flash`) and `GEMINI_FALLBACK_MODEL` (default `gemini-3.1-flash-lite`, empty disables).
+
+Live tests (opt-in, a few free-tier Gemini calls): `RUN_LIVE_LLM=1 python -m pytest backend/tests/unit_ai/test_extractor_live.py backend/tests/unit_ai/test_auditor_live.py -v -s`
+
+For P4 (lint config): there is no repo `ruff` config yet. With ruff 0.17 defaults the P2 code passes `ruff check` and `ruff format --check` (line length 88).
 
 ## Verification (Definition of Done)
-- `pytest backend/tests/unit_ai` passes 100%.
-- `pytest backend/tests/integration` still passes.
-- `ruff check . && ruff format --check .` and `mypy app/ai` (strict) clean.
+- `python -m pytest backend/tests/unit_ai backend/tests/integration -q`: 221 passed, 12 live tests skipped by default.
+- `python -m ruff check backend/app/ai backend/tests/unit_ai && python -m ruff format --check backend/app/ai backend/tests/unit_ai`: clean.
+- `python -m mypy --strict backend/app/ai backend/tests/unit_ai`: clean.
 - Extraction: 3 fixture contracts, 100% schema pass, exact amounts, under 8 s each.
 - Math: zero drift between `shortfall + penalty` and `total_remediation_amount`.
 - P1 successfully calls both public functions in the integrated backend.
