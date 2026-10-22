@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from decimal import Decimal
-from typing import Optional
 
 import pytest
 
@@ -24,7 +23,7 @@ def calc(
     fee: str = "5.00",
     partial: bool = False,
     contract_currency: str = "USD",
-    captured_currency: Optional[str] = None,
+    captured_currency: str | None = None,
 ) -> DiscrepancyMath:
     return calculate_discrepancy_math(
         expected_amount=D(expected),
@@ -89,7 +88,9 @@ def test_grace_period_boundary(days_after_due: int, late: bool) -> None:
 
 def test_zero_grace_boundary() -> None:
     assert calc(days_after_due=0, grace=0).is_compliant
-    assert calc(days_after_due=1, grace=0).discrepancy_type is DiscrepancyType.LATE_PAYMENT
+    assert (
+        calc(days_after_due=1, grace=0).discrepancy_type is DiscrepancyType.LATE_PAYMENT
+    )
 
 
 def test_overpayment_on_time_is_compliant() -> None:
@@ -135,7 +136,14 @@ def test_one_cent_short() -> None:
 
 
 def test_currency_mismatch_is_flag_only() -> None:
-    r = calc("2500.00", "2300.00", days_after_due=1, grace=0, fee="7.00", captured_currency="EUR")
+    r = calc(
+        "2500.00",
+        "2300.00",
+        days_after_due=1,
+        grace=0,
+        fee="7.00",
+        captured_currency="EUR",
+    )
     assert r.discrepancy_type is DiscrepancyType.CURRENCY_MISMATCH
     assert r.discrepancy_status is DiscrepancyStatus.PENDING_APPROVAL
     assert (r.shortfall_amount, r.penalty_amount, r.total_remediation_amount) == (
@@ -169,10 +177,14 @@ def test_negative_amount_rejected() -> None:
         calc(captured="-1.00")
 
 
-@pytest.mark.parametrize("expected", ["0.01", "1.00", "99.99", "1000.00", "12345.67", "999999.99"])
+@pytest.mark.parametrize(
+    "expected", ["0.01", "1.00", "99.99", "1000.00", "12345.67", "999999.99"]
+)
 @pytest.mark.parametrize("captured_factor", ["0", "0.5", "1", "1.5"])
 @pytest.mark.parametrize("days", [0, 4])
-def test_total_invariant_across_grid(expected: str, captured_factor: str, days: int) -> None:
+def test_total_invariant_across_grid(
+    expected: str, captured_factor: str, days: int
+) -> None:
     """48 grid cases: total == shortfall + penalty exactly, all at 2 dp."""
     cap = (D(expected) * D(captured_factor)).quantize(D("0.01"))
     r = calc(expected, str(cap), days_after_due=days)

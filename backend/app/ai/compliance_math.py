@@ -10,13 +10,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Optional
 
 from ..schemas.contracts import DiscrepancyStatus, DiscrepancyType
 
 _CENT = Decimal("0.01")
 _ZERO = Decimal("0.00")
-_HUNDRED = Decimal("100")
+_HUNDRED = Decimal(100)
 
 
 @dataclass(frozen=True)
@@ -26,7 +25,7 @@ class DiscrepancyMath:
     is_compliant: bool
     expected_amount: Decimal
     captured_amount: Decimal
-    captured_currency: Optional[str]
+    captured_currency: str | None
     shortfall_amount: Decimal
     penalty_amount: Decimal
     total_remediation_amount: Decimal
@@ -50,7 +49,7 @@ def calculate_discrepancy_math(
     late_fee_percentage: Decimal,
     allow_partial_payments: bool,
     contract_currency: str = "USD",
-    captured_currency: Optional[str] = None,
+    captured_currency: str | None = None,
 ) -> DiscrepancyMath:
     expected = _money(expected_amount, "expected_amount")
     captured = _money(captured_amount, "captured_amount")
