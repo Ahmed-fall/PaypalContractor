@@ -360,14 +360,16 @@ async def test_bad_answer_is_not_retried() -> None:
 @pytest.mark.asyncio
 async def test_timeout_is_not_retried() -> None:
     slow = FakeProvider(acme_answer(), delay=2.0)
-    await extract_rules_from_text(
+    result = await extract_rules_from_text(
         contract_text("Acme_Standard"),
         providers=[slow],
+        budget_seconds=0.1,
         provider_timeout=0.05,
         min_slot=0.0,
         retry_delay=0.01,
     )
     assert slow.calls == 1
+    assert result.extraction_confidence == REGEX_CONFIDENCE  # it really timed out
 
 
 @pytest.mark.asyncio
