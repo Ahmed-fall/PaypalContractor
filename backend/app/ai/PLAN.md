@@ -72,6 +72,8 @@ Tests: headline Acme ($150 + $50 = $200), Globex late ($175), Initech partial-al
 - Budget **3 s** (primary model up to 2.5 s): it runs synchronously on `/capture`, and only the wording is at stake.
 - `prompts.py`: versioned prompts; contract clause and payer note in `<untrusted_*>` blocks; every tag-like `<...` inside untrusted text is escaped, so it can neither close its block nor forge `<audit_facts>`.
 - `llm.py`: shared Gemini client, transient-error policy and failover loop used by both extractor and auditor.
+  - Free tier is **20 requests/day per model**. A per-day 429 is not retried: the model is skipped until Google's `retryDelay` (process-local), so later requests lose no time on it. A per-minute 429 is still retried once.
+  - The last model still available may use the whole remaining budget instead of the per-model cap; the total budget (8 s extract / 3 s audit) always holds.
 - Tests: TST-06 (hostile note, even with an obedient model), TST-07 (timeout, hang, 503 ×4, malformed output, no key: all fall back in under 200 ms, or within the 3 s budget for a hanging model).
 
 ### Stage 4 — public API
@@ -104,7 +106,7 @@ For P4 (lint config): there is no repo `ruff` config yet. With ruff 0.17 default
 ## Verification (Definition of Done)
 - `python -m pytest backend/tests/unit_ai backend/tests/integration -q`: 221 passed, 12 live tests skipped by default.
 - `python -m ruff check backend/app/ai backend/tests/unit_ai && python -m ruff format --check backend/app/ai backend/tests/unit_ai`: clean.
-- `python -m mypy --strict backend/app/ai backend/tests/unit_ai`: clean.
+- `python -m mypy --strict backend/app/ai` and, as a separate run, `python -m mypy --strict backend/tests/unit_ai`: clean. Checking both in one run reports "source file found twice", because `backend/` is not a package.
 - Extraction: 3 fixture contracts, 100% schema pass, exact amounts, under 8 s each.
 - Math: zero drift between `shortfall + penalty` and `total_remediation_amount`.
 - P1 successfully calls both public functions in the integrated backend.
