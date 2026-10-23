@@ -21,11 +21,37 @@ CONTRACTS = Path(__file__).resolve().parents[3] / "shared" / "fixtures" / "contr
 def test_exports_exactly_the_public_surface() -> None:
     assert sorted(ai.__all__) == [
         "ContractParseError",
+        "InvoiceInvariantError",
+        "InvoiceNoteTooLong",
+        "NothingToInvoice",
+        "PayPalInvoiceExecutor",
+        "RemediationNotApproved",
+        "RemediationRun",
+        "RemediationStepFailed",
+        "build_create_invoice_params",
         "evaluate_payment_compliance",
         "extract_contract_rules",
+        "remediation_request_id",
+        "run_remediation",
     ]
+    for name in ai.__all__:
+        assert hasattr(ai, name), name
     assert inspect.iscoroutinefunction(ai.extract_contract_rules)
     assert inspect.iscoroutinefunction(ai.evaluate_payment_compliance)
+    assert inspect.iscoroutinefunction(ai.run_remediation)
+
+
+def test_run_remediation_signature() -> None:
+    params = inspect.signature(ai.run_remediation).parameters
+    assert list(params)[:4] == ["contract", "milestone", "evaluation", "executor"]
+    for name in (
+        "discrepancy_id",
+        "confirm_send",
+        "note_override",
+        "existing_invoice_id",
+    ):
+        assert params[name].kind is inspect.Parameter.KEYWORD_ONLY, name
+    assert params["note_override"].default is None
 
 
 def test_signatures_match_the_interface_contract() -> None:

@@ -17,7 +17,8 @@ import os
 import re
 import time
 from collections.abc import Awaitable, Callable, Sequence
-from typing import TypeVar
+from dataclasses import dataclass
+from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
@@ -46,6 +47,14 @@ T = TypeVar("T")
 
 class EmptyModelResponse(ValueError):
     """The model returned no content."""
+
+
+@dataclass(frozen=True)
+class ToolCall:
+    """One function call proposed by a model (name + raw arguments, unvalidated)."""
+
+    name: str
+    args: dict[str, Any]
 
 
 class GeminiModel:
@@ -78,6 +87,56 @@ class GeminiModel:
         if not response.text:
             raise EmptyModelResponse(f"{self.name} returned an empty response")
         return schema.model_validate_json(response.text)
+
+    async def generate_tool_calls(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        declarations: Sequence[dict[str, Any]],
+        allowed: Sequence[str],
+    ) -> list[ToolCall]:
+        """Ask the model to plan with function calls only (mode ANY), restricted to
+        ``allowed``. The calls are returned in order and are NOT validated here."""
+        declared = {str(d["name"]) for d in declarations}
+        undeclared = [name for name in allowed if name not in declared]
+        if undeclared:
+            raise ValueError(f"allowed tools are not declared: {undeclared}")
+
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=self._api_key)
+        response = await client.aio.models.generate_content(
+            model=self.model,
+            contents=user_prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                tools=[
+                    types.Tool(
+                        function_declarations=[
+                            types.FunctionDeclaration(
+                                name=d["name"],
+                                description=d["description"],
+                                parameters_json_schema=d["parameters"],
+                            )
+                            for d in declarations
+                        ]
+                    )
+                ],
+                tool_config=types.ToolConfig(
+                    function_calling_config=types.FunctionCallingConfig(
+                        mode=types.FunctionCallingConfigMode.ANY,
+                        allowed_function_names=list(allowed),
+                    )
+                ),
+                temperature=0.0,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
+            ),
+        )
+        calls = response.function_calls
+        if not calls:
+            raise EmptyModelResponse(f"{self.name} returned no function calls")
+        return [ToolCall(name=str(c.name), args=dict(c.args or {})) for c in calls]
 
 
 def configured_key(value: str | None) -> str | None:
