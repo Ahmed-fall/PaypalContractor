@@ -35,11 +35,12 @@ All P2 work lives on one branch: **`feat/p2-ai-engine`**. Commit in the three st
 
 | # | Stage | Contents | Tests | Status |
 | --- | --- | --- | --- | --- |
-| 1 | Compliance math | `compliance_math.py` | TST-05 `test_compliance_math.py` | Done, committed locally |
-| 2 | Contract extractor | `pdf_parser.py`, `extractor.py`, extraction prompts | TST-03, TST-04 | Done, uncommitted; live default chain passes all 3 contracts; OpenAI removed (no credits) |
-| 3 | Compliance auditor | `auditor_agent.py`, `prompts.py` guards, shared `llm.py` | TST-05/06/07 | Done, uncommitted; live Gemini passes all 3 scenarios (template covers 503/timeouts) |
-| 4 | Public API + checks | `__init__.py` exports, ruff, mypy | full suite | Done, uncommitted: 221 offline tests + 11/12 live pass; ruff and `mypy --strict` clean |
-| 5 | Commit + PR | one PR for the branch | CI | Waiting for the go-ahead |
+| 1 | Compliance math | `compliance_math.py` | TST-05 `test_compliance_math.py` | Done, pushed |
+| 2 | Contract extractor | `pdf_parser.py`, `extractor.py`, extraction prompts | TST-03, TST-04 | Done, pushed; live default chain passes all 3 contracts; OpenAI removed (no credits) |
+| 3 | Compliance auditor | `auditor_agent.py`, `prompts.py` guards, shared `llm.py` | TST-05/06/07 | Done, pushed; live Gemini passes all 3 scenarios (template covers 503/timeouts) |
+| 4 | Public API + checks | `__init__.py` exports, ruff, mypy | full suite | Done, pushed |
+| 5 | Remediation tools (PayPal Agent Toolkit) | `paypal_tools.py`, `remediation_agent.py`, `llm.generate_tool_calls` | see [the tools plan](2026-10-23-paypal-agent-toolkit-tools.md) | Done, staged (not committed); live: `planned_by=gemini` in 5.3 s |
+| 6 | Commit + PR | one PR for the branch | CI | Waiting for the go-ahead |
 
 ### Stage 1 — compliance math
 Rules implemented:
@@ -77,7 +78,19 @@ Tests: headline Acme ($150 + $50 = $200), Globex late ($175), Initech partial-al
 - Tests: TST-06 (hostile note, even with an obedient model), TST-07 (timeout, hang, 503 ×4, malformed output, no key: all fall back in under 200 ms, or within the 3 s budget for a hanging model).
 
 ### Stage 4 — public API
-`from app.ai import extract_contract_rules, evaluate_payment_compliance, ContractParseError` (`backend/app/ai/__init__.py`).
+`from app.ai import extract_contract_rules, evaluate_payment_compliance, run_remediation, ...` (`backend/app/ai/__init__.py`; full list in `__all__`).
+
+### Stage 5 — remediation tools (PayPal Agent Toolkit)
+Detailed plan, rulings and review: [2026-10-23-paypal-agent-toolkit-tools.md](2026-10-23-paypal-agent-toolkit-tools.md).
+- `paypal_tools.py`: invoice tool parameters mirroring `paypal-agent-toolkit` **1.11.0** with the exact upstream field names (`create_invoice`, `send_invoice`, `generate_invoice_qr_code`, `send_invoice_reminder`). The package is **not installed** (it needs `pydantic>=2.10` + langchain/crewai). Models forbid unknown fields.
+  - `build_create_invoice_params(contract, milestone, evaluation, *, note_override=None)` builds the canonical `create_invoice` arguments from the engine's line items. It raises `NothingToInvoice` for a total of 0 and `InvoiceInvariantError` if items do not add up, are not positive, or use another currency. It clips `reference` ≤ 120 and `business_name` ≤ 300 (PayPal limits).
+  - A non-blank `note_override` (the approver's text) replaces the note body; the engine footer (verbatim clause + amount due) is always kept; over 4000 characters raises `InvoiceNoteTooLong`.
+- `remediation_agent.py`: `run_remediation(contract, milestone, evaluation, executor, *, discrepancy_id, confirm_send, note_override=None)`.
+  1. Refuses without `confirm_send=True` (`RemediationNotApproved`).
+  2. Gemini starts the workflow by **function calling** (planned `create_invoice` with the exact canonical arguments in live tests). Its proposal is only accepted if it is an in-order prefix of create → send → QR whose currency, full recipient list and items match; **only the engine's own arguments are ever executed**.
+  3. Executes create → send → QR through the `PayPalInvoiceExecutor` that **P1 implements**. `request_id = uuid5(NAMESPACE_DNS, f"{discrepancy_id}:remediate")` (PIT-06).
+  4. A create/send failure raises `RemediationStepFailed(step, invoice_id)`; a QR failure is not fatal (`qr_code_base64=None`, `qr_error` set; Fallback B).
+- Planning budget **7 s** (owner decision 2026-10-24): Gemini needs ~5 s to plan; this runs only on the Approve click, not on `/capture`. Without a key, or when Gemini is slow or out of quota, the same three steps run deterministically.
 
 ## Handoff notes for P1
 - `extract_contract_rules` raises `ContractParseError` (`.reason` code, user-safe message): return **HTTP 422** with `str(error)`. It never raises on model failure.
@@ -85,8 +98,27 @@ Tests: headline Acme ($150 + $50 = $200), Globex late ($175), Initech partial-al
 - `contract` may be `ContractExtractionResult`, `PersistedContractExtraction` or `ContractActivateRequest`; `milestone` may be `ExtractedMilestoneSpec` or `PersistedMilestoneSpec`.
 - `payer_note`: `SimulatorPaymentRequest` has no note field; pass the PayPal capture/order note if there is one, else omit.
 - If `total_remediation_amount == 0` (compliant or currency mismatch) there are no line items: do not create an invoice.
-- Use `paypal_invoice_detail_note` as invoice `detail.note` and `remediation_line_items` as `items[]` at **draft creation** (PIT-01).
+- Use `paypal_invoice_detail_note` as invoice `detail.note` and `remediation_line_items` as `items[]` at **draft creation** (PIT-01). `run_remediation` does this for you via `CreateInvoiceParameters`.
 - Worst-case added latency on `/capture`: 3 s (then template text).
+
+### Remediation (`POST /discrepancies/{id}/remediate`)
+- Call `run_remediation` **only** from this endpoint, after `confirm_send=true`; pass `RemediationRequest.custom_note_override` as `note_override` and the discrepancy id as `discrepancy_id`.
+- Implement `PayPalInvoiceExecutor` (3 async methods) with the existing PayPal client:
+  - `create_invoice(params, request_id) -> invoice_id`: `POST /v2/invoicing/invoices` with header `PayPal-Request-Id: request_id`. Map `params` to PayPal's body: `detail.currency_code` and `detail.note` from `currency_code` / `note`; `detail.reference` from `reference`; `primary_recipients[].billing_info.{business_name, email_address}`; `items[]` with `unit_amount: {currency_code, value}` (already nested, values are decimal strings). Keep the invoice number, status and payer-view link from the response for `RemediationInvoiceRecord`.
+  - `send_invoice(params)`: `POST /v2/invoicing/invoices/{invoice_id}/send` with `send_to_recipient=true` (no note: PayPal ignores it, PIT-01).
+  - `generate_invoice_qr_code(params) -> base64 PNG`: `POST .../{invoice_id}/generate-qr-code` (width/height 300).
+- Errors: `RemediationNotApproved` → 403/409; `NothingToInvoice` → 409 (nothing to bill); `InvoiceNoteTooLong` → 422; `InvoiceInvariantError` → 500 (internal invariant; should never happen); `RemediationStepFailed` → 502.
+- **Retry story** (one path, all inside the engine):
+  - `RemediationStepFailed(step="create_invoice", invoice_id=None)`: call `run_remediation` again **unchanged**. The same `request_id` is sent as `PayPal-Request-Id`, so PayPal returns the existing draft instead of creating a second one.
+  - `RemediationStepFailed(step="send_invoice", invoice_id=X)`: store `X`, then call `run_remediation(..., existing_invoice_id=X)`. Planning and create are skipped; send and QR run.
+  - In your executor, treat PayPal's "invoice already sent" error on `send_invoice` as success (a lost response may mean the first send worked).
+  - `run.request_id` (derived from the discrepancy id) is the PayPal-Request-Id; `RemediationRequest.idempotency_key` is **not** used for it.
+- **Serialise per discrepancy**: lock the discrepancy row (or check its status is still `PENDING_APPROVAL`) before calling, so a double-click on Approve cannot run two remediations at once. Set `REMEDIATED` only after `run_remediation` returns.
+- `executor.create_invoice` must return the PayPal invoice id as a non-blank string; anything else is reported as `RemediationStepFailed(step="create_invoice")`.
+- If the request is cancelled mid-flight (`asyncio.CancelledError`), the invoice may exist at PayPal without a record on our side; the deterministic `request_id` lets the next call recover it.
+- `run.qr_error` is diagnostic text from your executor: log it, don't show it raw in the UI.
+- On `run.qr_code_base64 is None`, build a local QR from the payer-view link (AGENTS.md Fallback B).
+- Store `run.planned_by` (`"gemini"` or `"deterministic"`) if you want the UI or demo to show that the AI started the remediation.
 
 ## Order of work
 1. ~~Stages 1–4~~ (done).
