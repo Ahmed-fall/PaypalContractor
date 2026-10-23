@@ -49,6 +49,10 @@ INVOICE_NOTE_MAX_CHARS = 1500
 ITEM_NAME_MAX_CHARS = 120
 ITEM_DESCRIPTION_MAX_CHARS = 500
 _CLAUSE_IN_FOOTER_MAX_CHARS = 600
+# The engine-written invoice-note footer always starts with one of these lines. Single
+# source of truth: paypal_tools.engine_note_footer locates the footer with them.
+FOOTER_CLAUSE_PREFIX = "Contract reference: "
+FOOTER_AMOUNT_PREFIX = "Amount due: "
 
 # Any of the backend's contract shapes works: the AI result, the persisted one, or the
 # human-edited activation payload.
@@ -316,7 +320,7 @@ def note_footer(f: _Facts) -> str:
     lines: list[str] = []
     if f.clause:
         lines.append(
-            f'Contract reference: "{_clip(f.clause, _CLAUSE_IN_FOOTER_MAX_CHARS)}"'
+            f'{FOOTER_CLAUSE_PREFIX}"{_clip(f.clause, _CLAUSE_IN_FOOTER_MAX_CHARS)}"'
         )
     m = f.math
     if m.total_remediation_amount > 0:
@@ -325,10 +329,11 @@ def note_footer(f: _Facts) -> str:
             parts.append(f"shortfall {f.shortfall}")
         if m.penalty_amount > 0:
             parts.append(f"late fee {f.penalty}")
-        lines.append(f"Amount due: {f.total} ({' + '.join(parts)})")
+        lines.append(f"{FOOTER_AMOUNT_PREFIX}{f.total} ({' + '.join(parts)})")
     elif m.discrepancy_type is DiscrepancyType.CURRENCY_MISMATCH:
         lines.append(
-            f"Amount due: none on this invoice; settle the full {f.expected} in {f.currency}."
+            f"{FOOTER_AMOUNT_PREFIX}none on this invoice; "
+            f"settle the full {f.expected} in {f.currency}."
         )
     return "\n".join(lines)
 
