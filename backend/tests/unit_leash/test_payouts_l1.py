@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 import uuid
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
+import respx
 
 from scripts import payouts_l1
 
@@ -113,3 +116,333 @@ def test_parse_amount_rejects(text: str) -> None:
 
 def test_parse_amount_accepts() -> None:
     assert payouts_l1.parse_amount("1.00") == Decimal("1.00")
+
+
+# ---------------------------------------------------------------------------
+# Task 2: client, L1 flow, CLI (all PayPal traffic mocked with respx)
+# ---------------------------------------------------------------------------
+
+BASE = "https://api-m.sandbox.paypal.com"
+RECIPIENTS = ["sb-sara@personal.example.com", "sb-omar@personal.example.com"]
+BATCH_ID = "5UXD2E8A7EBQJ"
+ITEM_IDS = [f"prl_l1_{RUN}_1", f"prl_l1_{RUN}_2"]
+
+
+class FakeAuth:
+    def __init__(self) -> None:
+        self.tokens = 0
+        self.invalidations = 0
+
+    async def get_access_token(self) -> str:
+        self.tokens += 1
+        return "test-token"
+
+    def invalidate(self) -> None:
+        self.invalidations += 1
+
+
+class Sleeper:
+    def __init__(self) -> None:
+        self.calls: list[float] = []
+
+    async def __call__(self, seconds: float) -> None:
+        self.calls.append(seconds)
+
+
+def _created() -> dict[str, Any]:
+    return {"batch_header": {"payout_batch_id": BATCH_ID, "batch_status": "PENDING"}}
+
+
+def _batch(status: str, item_status: str = "SUCCESS", count: int = 2) -> dict[str, Any]:
+    return {
+        "batch_header": {"payout_batch_id": BATCH_ID, "batch_status": status},
+        "items": [
+            {
+                "payout_item_id": f"ITEM{n}",
+                "transaction_status": item_status,
+                "payout_item": {
+                    "receiver": RECIPIENTS[n - 1],
+                    "sender_item_id": ITEM_IDS[n - 1],
+                },
+            }
+            for n in range(1, count + 1)
+        ],
+    }
+
+
+DUP_BODY = {
+    "name": "USER_BUSINESS_ERROR",
+    "details": [{"issue": "Batch with given sender_batch_id already exists"}],
+}
+
+
+def _make(
+    sleeper: Sleeper | None = None, auth: FakeAuth | None = None
+) -> tuple[payouts_l1.PayoutsClient, FakeAuth, Sleeper, httpx.AsyncClient]:
+    auth = auth or FakeAuth()
+    sleeper = sleeper or Sleeper()
+    http = httpx.AsyncClient()
+    return (
+        payouts_l1.PayoutsClient(BASE, auth, http, sleep=sleeper),
+        auth,
+        sleeper,
+        http,
+    )
+
+
+def _mock_happy(router: respx.MockRouter) -> respx.Route:
+    post = router.post("/v1/payments/payouts").mock(
+        side_effect=[
+            httpx.Response(201, json=_created()),
+            httpx.Response(400, json=DUP_BODY),
+        ]
+    )
+    router.get(f"/v1/payments/payouts/{BATCH_ID}").mock(
+        side_effect=[
+            httpx.Response(200, json=_batch("PROCESSING", "PENDING")),
+            httpx.Response(200, json=_batch("SUCCESS")),
+        ]
+    )
+    router.get("/v1/payments/payouts-item/ITEM1").mock(
+        return_value=httpx.Response(200, json={"payout_item_id": "ITEM1"})
+    )
+    router.get("/v1/notifications/webhooks-events").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "events": [
+                    {"id": "WH-1", "event_type": "PAYMENT.PAYOUTS-ITEM.SUCCEEDED"}
+                ]
+            },
+        )
+    )
+    return post
+
+
+def _check(result: payouts_l1.L1Result, name: str) -> payouts_l1.Check:
+    return next(c for c in result.checks if c.name == name)
+
+
+@pytest.mark.asyncio
+async def test_happy_path_passes_all_checks() -> None:
+    client, _, sleeper, http = _make()
+    async with http, respx.mock(base_url=BASE) as router:
+        post = _mock_happy(router)
+        result = await payouts_l1.run_l1(
+            client, RECIPIENTS, Decimal("1.00"), "USD", RUN
+        )
+    assert result.ok, [c for c in result.checks if not c.passed]
+    assert sleeper.calls == [10]
+    first, second = (c.request.headers["paypal-request-id"] for c in post.calls)
+    assert first != second
+    assert first == payouts_l1.payout_request_id(RUN, "payout")
+    assert second == payouts_l1.payout_request_id(RUN, "payout-resend")
+    assert set(result.payloads) == {
+        "batch_create_201",
+        "batch_final",
+        "item",
+        "duplicate_rejected",
+        "webhook_item_succeeded",
+    }
+
+
+@pytest.mark.asyncio
+async def test_resend_accepted_fails_double_pay_check() -> None:
+    client, _, _, http = _make()
+    async with http, respx.mock(base_url=BASE) as router:
+        _mock_happy(router).mock(
+            side_effect=[
+                httpx.Response(201, json=_created()),
+                httpx.Response(201, json=_created()),
+            ]
+        )
+        result = await payouts_l1.run_l1(
+            client, RECIPIENTS, Decimal("1.00"), "USD", RUN
+        )
+    dup = _check(result, "duplicate_batch_rejected")
+    assert not dup.passed
+    assert "DOUBLE PAY" in dup.detail
+    assert not result.ok
+
+
+@pytest.mark.asyncio
+async def test_poll_stops_after_120_seconds() -> None:
+    client, _, sleeper, http = _make()
+    async with http, respx.mock(base_url=BASE) as router:
+        post = _mock_happy(router)
+        router.get(f"/v1/payments/payouts/{BATCH_ID}").mock(
+            return_value=httpx.Response(200, json=_batch("PROCESSING", "PENDING"))
+        )
+        result = await payouts_l1.run_l1(
+            client, RECIPIENTS, Decimal("1.00"), "USD", RUN
+        )
+    assert sleeper.calls == [10] * 12
+    assert not _check(result, "batch_success").passed
+    assert "PROCESSING" in _check(result, "batch_success").detail
+    assert post.call_count == 2  # the resend is still attempted
+
+
+@pytest.mark.asyncio
+async def test_unclaimed_item_is_terminal_and_fails() -> None:
+    client, _, sleeper, http = _make()
+    async with http, respx.mock(base_url=BASE) as router:
+        _mock_happy(router)
+        router.get(f"/v1/payments/payouts/{BATCH_ID}").mock(
+            return_value=httpx.Response(200, json=_batch("SUCCESS", "UNCLAIMED"))
+        )
+        result = await payouts_l1.run_l1(
+            client, RECIPIENTS, Decimal("1.00"), "USD", RUN
+        )
+    assert sleeper.calls == []
+    items = _check(result, "items_success")
+    assert not items.passed
+    assert "UNCLAIMED" in items.detail
+    assert "sb-sara@personal.example.com" not in items.detail
+
+
+@pytest.mark.asyncio
+async def test_401_refreshes_token_once() -> None:
+    client, auth, _, http = _make()
+    async with http, respx.mock(base_url=BASE) as router:
+        post = router.post("/v1/payments/payouts").mock(
+            side_effect=[
+                httpx.Response(401, json={"name": "AUTHENTICATION_FAILURE"}),
+                httpx.Response(201, json=_created()),
+            ]
+        )
+        response = await client.create_batch({"x": 1}, "req-1")
+    assert response.status_code == 201
+    assert auth.invalidations == 1
+    assert post.call_count == 2
+    assert {c.request.headers["paypal-request-id"] for c in post.calls} == {"req-1"}
+
+
+@pytest.mark.asyncio
+async def test_5xx_retries_with_same_request_id() -> None:
+    client, _, sleeper, http = _make()
+    async with http, respx.mock(base_url=BASE) as router:
+        post = router.post("/v1/payments/payouts").mock(
+            side_effect=[
+                httpx.Response(503),
+                httpx.Response(503),
+                httpx.Response(201, json=_created()),
+            ]
+        )
+        response = await client.create_batch({"x": 1}, "req-2")
+    assert response.status_code == 201
+    assert sleeper.calls == [1, 3]
+    assert {c.request.headers["paypal-request-id"] for c in post.calls} == {"req-2"}
+
+
+@pytest.mark.asyncio
+async def test_timeout_retries_then_raises() -> None:
+    client, _, sleeper, http = _make()
+    async with http, respx.mock(base_url=BASE) as router:
+        post = router.post("/v1/payments/payouts").mock(
+            side_effect=httpx.ReadTimeout("slow")
+        )
+        with pytest.raises(httpx.ReadTimeout):
+            await client.create_batch({"x": 1}, "req-3")
+    assert post.call_count == 3
+    assert sleeper.calls == [1, 3]
+
+
+@pytest.mark.asyncio
+async def test_400_is_not_retried() -> None:
+    client, _, sleeper, http = _make()
+    async with http, respx.mock(base_url=BASE) as router:
+        post = router.post("/v1/payments/payouts").mock(
+            return_value=httpx.Response(400, json={"name": "VALIDATION_ERROR"})
+        )
+        result = await payouts_l1.run_l1(
+            client, RECIPIENTS, Decimal("1.00"), "USD", RUN
+        )
+    assert post.call_count == 1
+    assert sleeper.calls == []
+    assert not result.ok
+    assert not _check(result, "batch_created").passed
+    assert result.payloads == {}
+
+
+@pytest.mark.asyncio
+async def test_webhook_lookup_failure_is_not_fatal() -> None:
+    client, _, _, http = _make()
+    async with http, respx.mock(base_url=BASE) as router:
+        _mock_happy(router)
+        router.get("/v1/notifications/webhooks-events").mock(
+            return_value=httpx.Response(403, json={"name": "NOT_AUTHORIZED"})
+        )
+        result = await payouts_l1.run_l1(
+            client, RECIPIENTS, Decimal("1.00"), "USD", RUN
+        )
+    assert result.ok
+    assert "webhook_item_succeeded" not in result.payloads
+
+
+@pytest.mark.asyncio
+async def test_cli_rejects_wrong_recipient_count_and_bad_amount() -> None:
+    with pytest.raises(SystemExit) as one_to:
+        await payouts_l1.main(["--to", "a@x.com"])
+    assert one_to.value.code == 2
+    with pytest.raises(SystemExit) as bad_amount:
+        await payouts_l1.main(["--to", "a@x.com", "--to", "b@x.com", "--amount", "1"])
+    assert bad_amount.value.code == 2
+
+
+def _patch_main(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeSettings:
+        paypal_api_base_url = BASE
+
+    monkeypatch.setattr(payouts_l1, "get_settings", lambda: FakeSettings())
+    monkeypatch.setattr(payouts_l1, "get_auth_manager", lambda: FakeAuth())
+    monkeypatch.setattr(payouts_l1, "ULID", lambda: RUN.upper())
+
+
+@pytest.mark.asyncio
+async def test_output_never_contains_full_email(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _patch_main(monkeypatch)
+    async with respx.mock(base_url=BASE) as router:
+        _mock_happy(router)
+        router.get(f"/v1/payments/payouts/{BATCH_ID}").mock(
+            return_value=httpx.Response(200, json=_batch("SUCCESS"))
+        )
+        code = await payouts_l1.main(["--to", RECIPIENTS[0], "--to", RECIPIENTS[1]])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "PASS batch_created" in out
+    assert f"sender_batch_id: fd-l1-{RUN}" in out
+    assert BATCH_ID in out
+    for email in RECIPIENTS:
+        assert email not in out
+
+
+@pytest.mark.asyncio
+async def test_save_fixtures_writes_redacted_files(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_main(monkeypatch)
+    monkeypatch.setattr(payouts_l1, "FIXTURE_DIR", tmp_path / "paypal")
+    async with respx.mock(base_url=BASE) as router:
+        _mock_happy(router)
+        router.get(f"/v1/payments/payouts/{BATCH_ID}").mock(
+            return_value=httpx.Response(200, json=_batch("SUCCESS"))
+        )
+        code = await payouts_l1.main(
+            ["--to", RECIPIENTS[0], "--to", RECIPIENTS[1], "--save-fixtures"]
+        )
+    assert code == 0
+    files = sorted((tmp_path / "paypal").glob("payouts_*.json"))
+    assert {f.name for f in files} >= {
+        "payouts_batch_final.json",
+        "payouts_batch_create_201.json",
+    }
+    for f in files:
+        text = f.read_text(encoding="utf-8")
+        assert text.endswith("\n")
+        assert not any(email in text for email in RECIPIENTS)
+    final = (tmp_path / "paypal" / "payouts_batch_final.json").read_text(
+        encoding="utf-8"
+    )
+    assert "sb-member1@personal.example.com" in final

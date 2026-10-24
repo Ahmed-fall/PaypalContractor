@@ -8,12 +8,26 @@ The token comes only from ``get_auth_manager()``; the base URL from ``get_settin
 
 from __future__ import annotations
 
+import argparse
+import asyncio
 import copy
+import json
+import logging
 import re
 import uuid
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
+
+import httpx
+from ulid import ULID
+
+from backend.app.config import get_settings
+from backend.app.services.paypal.auth import get_auth_manager
+
+logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_DIR = ROOT / "shared" / "fixtures" / "leash" / "paypal"
@@ -25,6 +39,9 @@ TIMEOUT_S = 15.0
 EMAIL_SUBJECT = "Leash L1 sandbox payout test"
 NON_TERMINAL_BATCH = {"NEW", "PENDING", "PROCESSING"}
 NON_TERMINAL_ITEM = {"PENDING", "ONHOLD"}
+RETRY_DELAYS_S = (1, 3)
+EVENT_TYPE_ITEM_SUCCEEDED = "PAYMENT.PAYOUTS-ITEM.SUCCEEDED"
+_CURRENCY_RE = re.compile(r"[A-Z]{3}")
 _AMOUNT_RE = re.compile(r"[0-9]+\.[0-9]{2}")
 
 
@@ -105,3 +122,312 @@ def is_batch_terminal(batch: dict[str, Any]) -> bool:
         item.get("transaction_status") not in NON_TERMINAL_ITEM
         for item in batch.get("items") or []
     )
+
+
+class AuthLike(Protocol):
+    async def get_access_token(self) -> str: ...
+
+    def invalidate(self) -> None: ...
+
+
+class PayoutsClient:
+    """Minimal Payouts HTTP client following the A.4 timeout and retry rules."""
+
+    def __init__(
+        self,
+        base_url: str,
+        auth: AuthLike,
+        http: httpx.AsyncClient,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._auth = auth
+        self._http = http
+        self.sleep = sleep
+
+    async def _send(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: dict[str, Any] | None = None,
+        request_id: str | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        refreshed = False
+        retries = 0
+        while True:
+            headers = {"Authorization": f"Bearer {await self._auth.get_access_token()}"}
+            if request_id is not None:
+                headers["PayPal-Request-Id"] = request_id
+            try:
+                response = await self._http.request(
+                    method,
+                    f"{self._base_url}{path}",
+                    json=json_body,
+                    params=params,
+                    headers=headers,
+                    timeout=TIMEOUT_S,
+                )
+            except httpx.TimeoutException:
+                if retries < len(RETRY_DELAYS_S):
+                    await self.sleep(RETRY_DELAYS_S[retries])
+                    retries += 1
+                    continue
+                raise
+            logger.info(
+                "paypal %s %s -> %s paypal-debug-id=%s",
+                method,
+                path,
+                response.status_code,
+                response.headers.get("paypal-debug-id"),
+            )
+            if response.status_code == 401 and not refreshed:
+                self._auth.invalidate()
+                refreshed = True
+                continue
+            if response.status_code >= 500 and retries < len(RETRY_DELAYS_S):
+                await self.sleep(RETRY_DELAYS_S[retries])
+                retries += 1
+                continue
+            return response
+
+    async def create_batch(
+        self, body: dict[str, Any], request_id: str
+    ) -> httpx.Response:
+        return await self._send(
+            "POST", "/v1/payments/payouts", json_body=body, request_id=request_id
+        )
+
+    async def get_batch(self, batch_id: str) -> dict[str, Any]:
+        response = await self._send("GET", f"/v1/payments/payouts/{batch_id}")
+        response.raise_for_status()
+        result: dict[str, Any] = response.json()
+        return result
+
+    async def get_item(self, item_id: str) -> dict[str, Any]:
+        response = await self._send("GET", f"/v1/payments/payouts-item/{item_id}")
+        response.raise_for_status()
+        result: dict[str, Any] = response.json()
+        return result
+
+    async def latest_webhook_event(self, event_type: str) -> dict[str, Any] | None:
+        """Best effort: the newest stored webhook event of this type, else ``None``."""
+        try:
+            response = await self._send(
+                "GET",
+                "/v1/notifications/webhooks-events",
+                params={"event_type": event_type, "page_size": 1},
+            )
+            if response.status_code != 200:
+                return None
+            events = response.json().get("events") or []
+        except (httpx.HTTPError, ValueError, AttributeError):
+            return None
+        first = events[0] if events else None
+        return first if isinstance(first, dict) else None
+
+
+@dataclass
+class Check:
+    name: str
+    passed: bool
+    detail: str
+
+
+@dataclass
+class L1Result:
+    checks: list[Check] = field(default_factory=list)
+    payloads: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def ok(self) -> bool:
+        return all(check.passed for check in self.checks)
+
+
+def _json_or_empty(response: httpx.Response) -> dict[str, Any]:
+    try:
+        body = response.json()
+    except ValueError:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+def _scrub(text: str, recipients: list[str]) -> str:
+    """Mask any recipient email appearing in free text from PayPal."""
+    for email in recipients:
+        text = re.sub(
+            re.escape(email.strip()),
+            mask_email(email.strip()),
+            text,
+            flags=re.IGNORECASE,
+        )
+    return text
+
+
+async def run_l1(
+    client: PayoutsClient,
+    recipients: list[str],
+    amount: Decimal,
+    currency: str,
+    run_id: str,
+) -> L1Result:
+    result = L1Result()
+    body = build_batch(run_id, recipients, amount, currency)
+    sent_ids = [item["sender_item_id"] for item in body["items"]]
+
+    # 1. Create the batch.
+    created = await client.create_batch(body, payout_request_id(run_id, "payout"))
+    created_body = _json_or_empty(created)
+    header = created_body.get("batch_header") or {}
+    created_ok = created.status_code == 201 and header.get("batch_status") == "PENDING"
+    result.checks.append(
+        Check(
+            "batch_created",
+            created_ok,
+            f"HTTP {created.status_code} batch_status={header.get('batch_status')}",
+        )
+    )
+    if created.status_code != 201:
+        return result
+    result.payloads["batch_create_201"] = created_body
+    batch_id = header.get("payout_batch_id")
+    if not batch_id:
+        result.checks.append(
+            Check("batch_id_present", False, "no payout_batch_id in 201")
+        )
+        return result
+
+    # 2. Poll on simulated time until terminal or POLL_MAX_S.
+    elapsed = 0
+    final = await client.get_batch(batch_id)
+    while not is_batch_terminal(final) and elapsed < POLL_MAX_S:
+        await client.sleep(POLL_INTERVAL_S)
+        elapsed += POLL_INTERVAL_S
+        final = await client.get_batch(batch_id)
+    result.payloads["batch_final"] = final
+
+    # 3. Batch and item outcomes.
+    status = (final.get("batch_header") or {}).get("batch_status")
+    result.checks.append(
+        Check(
+            "batch_success",
+            status == "SUCCESS",
+            f"batch_status={status} after {elapsed}s",
+        )
+    )
+    items: list[dict[str, Any]] = final.get("items") or []
+    echoed = [(i.get("payout_item") or {}).get("sender_item_id") for i in items]
+    all_success = bool(items) and all(
+        i.get("transaction_status") == "SUCCESS" for i in items
+    )
+    ids_match = sorted(str(e) for e in echoed) == sorted(sent_ids)
+    if all_success and ids_match:
+        items_detail = f"{len(items)} items SUCCESS, sender_item_ids echoed"
+    else:
+        listing = ", ".join(
+            f"{mask_email(str((i.get('payout_item') or {}).get('receiver', '?')))}"
+            f" -> {i.get('transaction_status')}"
+            for i in items
+        )
+        items_detail = f"{listing or 'no items'}; sender_item_ids_match={ids_match}"
+    result.checks.append(
+        Check("items_success", all_success and ids_match, items_detail)
+    )
+
+    # 4. Resend the identical body: PayPal must reject the reused sender_batch_id.
+    dup = await client.create_batch(body, payout_request_id(run_id, "payout-resend"))
+    dup_body = _json_or_empty(dup)
+    if dup.status_code in (400, 422) and "batch_header" not in dup_body:
+        details = dup_body.get("details") or []
+        issue = (
+            details[0].get("issue")
+            if details and isinstance(details[0], dict)
+            else None
+        )
+        dup_ok = True
+        dup_detail = _scrub(
+            f"HTTP {dup.status_code} {dup_body.get('name')}: {issue}", recipients
+        )
+    elif dup.status_code == 201:
+        dup_ok, dup_detail = (
+            False,
+            "DOUBLE PAY: PayPal accepted a reused sender_batch_id",
+        )
+    else:
+        dup_ok, dup_detail = False, f"unexpected HTTP {dup.status_code}"
+    result.checks.append(Check("duplicate_batch_rejected", dup_ok, dup_detail))
+    result.payloads["duplicate_rejected"] = dup_body
+
+    # 5. One item lookup.
+    if items and items[0].get("payout_item_id"):
+        result.payloads["item"] = await client.get_item(str(items[0]["payout_item_id"]))
+
+    # 6. Best-effort webhook event.
+    event = await client.latest_webhook_event(EVENT_TYPE_ITEM_SUCCEEDED)
+    if event is not None:
+        result.payloads["webhook_item_succeeded"] = event
+    return result
+
+
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
+    def amount_type(text: str) -> Decimal:
+        try:
+            return parse_amount(text)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(str(exc)) from exc
+
+    def currency_type(text: str) -> str:
+        if not _CURRENCY_RE.fullmatch(text):
+            raise argparse.ArgumentTypeError("currency must be 3 uppercase letters")
+        return text
+
+    parser = argparse.ArgumentParser(
+        description="Payouts L1 sandbox proof (2-item batch)."
+    )
+    parser.add_argument("--to", action="append", default=[], metavar="EMAIL")
+    parser.add_argument("--amount", type=amount_type, default=Decimal("1.00"))
+    parser.add_argument("--currency", type=currency_type, default="USD")
+    parser.add_argument("--save-fixtures", action="store_true")
+    args = parser.parse_args(argv)
+    if len(args.to) != 2:
+        parser.error("exactly 2 --to recipients are required")
+    if any("@" not in email for email in args.to):
+        parser.error("--to must be an email address")
+    return args
+
+
+async def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+    recipients: list[str] = [email.strip().lower() for email in args.to]
+    run_id = str(ULID()).lower()
+    async with httpx.AsyncClient() as http:
+        client = PayoutsClient(
+            get_settings().paypal_api_base_url, get_auth_manager(), http
+        )
+        try:
+            result = await run_l1(
+                client, recipients, args.amount, args.currency, run_id
+            )
+        except httpx.HTTPError as exc:
+            print(f"FAIL request: {type(exc).__name__}")
+            return 1
+    for check in result.checks:
+        print(f"{'PASS' if check.passed else 'FAIL'} {check.name}: {check.detail}")
+    created_header = (result.payloads.get("batch_create_201") or {}).get(
+        "batch_header"
+    ) or {}
+    print(f"sender_batch_id: fd-l1-{run_id}")
+    print(f"payout_batch_id: {created_header.get('payout_batch_id', '-')}")
+    if args.save_fixtures:
+        FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
+        for key, payload in result.payloads.items():
+            path = FIXTURE_DIR / f"payouts_{key}.json"
+            text = json.dumps(redact(payload, recipients), indent=2, ensure_ascii=False)
+            path.write_text(text + "\n", encoding="utf-8")
+            print(f"saved {path.name}")
+    return 0 if result.ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(asyncio.run(main()))
