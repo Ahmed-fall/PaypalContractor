@@ -15,7 +15,7 @@ export type DiscrepancyType =
   | "UNDERPAID_AND_LATE"
   | "CURRENCY_MISMATCH";
 
-export type DiscrepancyStatus = "NONE" | "PENDING_APPROVAL" | "REMEDIATED";
+export type DiscrepancyStatus = "NONE" | "PENDING_APPROVAL" | "BLOCKED" | "REMEDIATED";
 
 export interface ExtractedMilestoneSpec {
   milestone_code: string;

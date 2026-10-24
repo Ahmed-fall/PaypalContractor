@@ -244,3 +244,14 @@ def test_mapping_confidence_bounded() -> None:
         c.ColumnMappingProposal(mapping={"Pay": "rate"}, confidence={"Pay": 7.0})
     ok = c.ColumnMappingProposal(mapping={"Pay": "rate"}, confidence={"Pay": 0.7})
     assert ok.confidence["Pay"] == 0.7
+
+
+def test_deny_ledger_row_can_be_blocked() -> None:
+    from pathlib import Path
+
+    base = Path(__file__).resolve().parents[3] / "shared" / "fixtures" / "json"
+    ledger = json.loads((base / "acme_ledger.json").read_text(encoding="utf-8"))
+    rows = ledger["rows"] if isinstance(ledger, dict) else ledger
+    row = {**rows[0], "discrepancy_status": "BLOCKED", "leash_decision": "DENY"}
+    lr = c.LedgerRow.model_validate(row)
+    assert lr.discrepancy_status == c.DiscrepancyStatus.BLOCKED

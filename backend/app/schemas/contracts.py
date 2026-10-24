@@ -42,6 +42,7 @@ class DiscrepancyType(str, Enum):
 class DiscrepancyStatus(str, Enum):
     NONE = "NONE"
     PENDING_APPROVAL = "PENDING_APPROVAL"
+    BLOCKED = "BLOCKED"
     REMEDIATED = "REMEDIATED"
 
 
