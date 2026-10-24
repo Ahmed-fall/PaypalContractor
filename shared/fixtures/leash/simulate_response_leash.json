@@ -1,0 +1,43 @@
+{
+  "paypal_order_id": "5O190127TN364715T",
+  "paypal_capture_id": "2GG279541U471931P",
+  "evaluation": {
+    "discrepancy_type": "UNDERPAID_AND_LATE",
+    "discrepancy_status": "REMEDIATED",
+    "is_compliant": false,
+    "expected_amount": "1000.00",
+    "captured_amount": "850.00",
+    "captured_currency": "USD",
+    "shortfall_amount": "150.00",
+    "penalty_amount": "50.00",
+    "total_remediation_amount": "200.00",
+    "violated_clause_quote": "Section 4.2: Any payment received below the milestone amount or more than 3 days past the due date incurs a mandatory 5.00% administrative late fee on the full milestone balance.",
+    "ai_audit_summary": "The capture of $850.00 is $150.00 short of the $1,000.00 MS-01 milestone and arrived 5 days after the Oct 15 due date, beyond the 3-day grace period; a 5% administrative late fee of $50.00 is due under Section 4.2.",
+    "paypal_invoice_detail_note": "Underpaid milestone MS-01 (Phase 1: Backend Architecture Delivery) against the Master Software Development Agreement dated Oct 1, 2026. Expected $1,000.00; received $850.00 on 2026-10-20, i.e. 5 days past the Oct 15, 2026 due date (3-day grace period exceeded). Section 4.2 imposes a 5.00% administrative late fee of $50.00 on the full milestone balance. This supplemental invoice bills the $150.00 outstanding balance plus the $50.00 contractual late fee.",
+    "remediation_line_items": [
+      {
+        "name": "Milestone shortfall - MS-01",
+        "description": "Outstanding balance on MS-01 Phase 1: Backend Architecture Delivery ($1,000.00 expected less $850.00 received), per Section 3.1.",
+        "quantity": "1",
+        "unit_amount_value": "150.00",
+        "currency_code": "USD"
+      },
+      {
+        "name": "Administrative late fee (5%) - MS-01",
+        "description": "Mandatory 5.00% late fee on the full $1,000.00 milestone balance, payment received after the 3-day grace period, per Section 4.2.",
+        "quantity": "1",
+        "unit_amount_value": "50.00",
+        "currency_code": "USD"
+      }
+    ]
+  },
+  "leash": {
+    "decision": "ALLOW",
+    "rule_ids": [
+      "G-01"
+    ],
+    "reason": "$200.00 is within your $250.00 auto-send limit and the breached clause is quoted.",
+    "decision_id": "lsd_0007"
+  },
+  "payroll_run_id": "prn_0001"
+}

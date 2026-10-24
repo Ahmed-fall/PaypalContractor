@@ -1,0 +1,20 @@
+{
+  "rows": [
+    {
+      "milestone_id": "ms_01",
+      "milestone_code": "MS-01",
+      "cash_in": "850.00",
+      "invoiced_open": "200.00",
+      "paid_to_team": "420.00",
+      "pending_to_team": "0.00",
+      "margin": "430.00",
+      "margin_pct": "50.59",
+      "payroll_status": "PAID"
+    }
+  ],
+  "summary": {
+    "cash_in": "850.00",
+    "paid_to_team": "420.00",
+    "margin": "430.00"
+  }
+}

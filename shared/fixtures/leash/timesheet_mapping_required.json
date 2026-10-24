@@ -1,0 +1,25 @@
+{
+  "upload_id": "tsu_0003",
+  "status": "MAPPING_REQUIRED",
+  "row_count": 9,
+  "headers": [
+    "Employee",
+    "Day",
+    "Hrs",
+    "Project"
+  ],
+  "proposal": {
+    "mapping": {
+      "Employee": "member",
+      "Day": "work_date",
+      "Hrs": "hours",
+      "Project": "milestone_code"
+    },
+    "confidence": {
+      "Employee": 0.97,
+      "Day": 0.95,
+      "Hrs": 0.99,
+      "Project": 0.81
+    }
+  }
+}

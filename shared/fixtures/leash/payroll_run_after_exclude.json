@@ -1,0 +1,56 @@
+{
+  "run_id": "prn_0001",
+  "mode": "MILESTONE",
+  "milestone_id": "ms_01",
+  "period": null,
+  "status": "CHECKED",
+  "total": "420.00",
+  "cash_in": "850.00",
+  "cash_used_pct": "49.41",
+  "run_decision": "ALLOW",
+  "run_flags": [],
+  "sender_batch_id": null,
+  "lines": [
+    {
+      "line_id": "prl_0001",
+      "member_name": "Omar",
+      "payout_email": "sb-omar.new@personal.example.com",
+      "hours": "12.00",
+      "rate": "25.00",
+      "gross": "300.00",
+      "decision": "ASK",
+      "flags": [
+        "PR-01"
+      ],
+      "reason": "Omar's payout email changed yesterday. Confirm it with him before paying.",
+      "owner_action": "EXCLUDED",
+      "payout_status": null
+    },
+    {
+      "line_id": "prl_0002",
+      "member_name": "Sara",
+      "payout_email": "sb-sara@personal.example.com",
+      "hours": "10.00",
+      "rate": "22.00",
+      "gross": "220.00",
+      "decision": "ALLOW",
+      "flags": [],
+      "reason": null,
+      "owner_action": null,
+      "payout_status": null
+    },
+    {
+      "line_id": "prl_0003",
+      "member_name": "Youssef",
+      "payout_email": "sb-youssef@personal.example.com",
+      "hours": "8.00",
+      "rate": "25.00",
+      "gross": "200.00",
+      "decision": "ALLOW",
+      "flags": [],
+      "reason": null,
+      "owner_action": null,
+      "payout_status": null
+    }
+  ]
+}
