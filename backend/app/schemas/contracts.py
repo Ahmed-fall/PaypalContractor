@@ -14,7 +14,14 @@ from decimal import Decimal, InvalidOperation
 from enum import Enum
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 class ContractStatus(str, Enum):
@@ -169,6 +176,8 @@ class LedgerRow(BaseModel):
     violated_clause_quote: Optional[str] = None
     ai_audit_summary: Optional[str] = None
     remediation_invoice: Optional[RemediationInvoiceRecord] = None
+    leash_decision: LeashDecision | None = None
+    remediation_sent_by: RemediationSentBy | None = None
 
 
 class LedgerSummary(BaseModel):
@@ -197,6 +206,8 @@ class SimulatorPaymentResponse(BaseModel):
     paypal_order_id: str
     paypal_capture_id: str
     evaluation: DiscrepancyEvaluationResult
+    leash: GuardResult | None = None
+    payroll_run_id: str | None = None
 
 
 class RemediationRequest(BaseModel):
@@ -323,3 +334,191 @@ class PayrollRunOut(BaseModel):
     run_flags: list[str]
     lines: list[PayrollLineOut]
     sender_batch_id: str | None = None
+
+
+# --- Leash REST models (Rev 2.1 A.2.2) and hook H1/H2 response fields ---
+
+DecisionSubjectType = Literal["discrepancy", "payroll_line", "payroll_run"]
+DecisionActor = Literal["leash", "owner"]
+RemediationSentBy = Literal["owner", "leash-auto"]
+
+
+class PolicyCompileRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(..., min_length=1, max_length=4000)
+
+
+class PolicyCompileResponse(BaseModel):
+    draft_version: int
+    status: Literal["DRAFT"]
+    policy: LeashPolicy
+    cards: list[str]
+    test_cases: list[str]
+
+
+class PolicyActivateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = Field(..., ge=1)
+
+
+class PolicyActivateResponse(BaseModel):
+    version: int
+    active: bool
+    activated_at: datetime
+
+
+class ActiveLeashPolicy(LeashPolicy):
+    activated_at: datetime
+
+
+class DecisionLogEntry(BaseModel):
+    decision_id: str
+    created_at: datetime
+    policy_version: int
+    action_type: GuardAction
+    subject_type: DecisionSubjectType
+    subject_id: str
+    decision: LeashDecision
+    rule_ids: list[str]
+    amount: Decimal | None = None
+    reason: str = Field(..., max_length=200)
+    actor: DecisionActor
+
+
+class DecisionLogResponse(BaseModel):
+    items: list[DecisionLogEntry]
+    next_cursor: str | None = None
+
+
+class TeamMemberCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(..., min_length=1, max_length=120)
+    payout_email: EmailStr
+    hourly_rate: Decimal = Field(..., gt=0, decimal_places=2)
+
+
+class TeamMemberUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    payout_email: EmailStr | None = None
+    hourly_rate: Decimal | None = Field(default=None, gt=0, decimal_places=2)
+    active: bool | None = None
+
+
+class TeamMemberOut(BaseModel):
+    member_id: str
+    name: str
+    payout_email: EmailStr
+    hourly_rate: Decimal
+    email_changed_at: datetime | None = None
+    first_paid_at: datetime | None = None
+    active: bool
+
+
+class TimesheetMappingRequired(BaseModel):
+    upload_id: str
+    status: Literal["MAPPING_REQUIRED"]
+    row_count: int
+    headers: list[str]
+    proposal: ColumnMappingProposal
+
+
+class TimesheetMappingConfirm(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mapping: dict[str, TimesheetField]
+
+    @field_validator("mapping")
+    @classmethod
+    def _targets_are_unique(cls, v: dict[str, TimesheetField]) -> dict[str, TimesheetField]:
+        if len(set(v.values())) != len(v):
+            msg = "each timesheet field may be mapped from only one column"
+            raise ValueError(msg)
+        return v
+
+
+class TimesheetParsed(BaseModel):
+    upload_id: str
+    status: Literal["PARSED"]
+    entries: int
+    unknown_members: list[str]
+    milestones: list[str]
+    warnings: list[str]
+
+
+class PayrollRunCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: PayrollMode
+    milestone_id: str | None = None
+    period: str | None = Field(default=None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
+
+    @model_validator(mode="after")
+    def _mode_selects_key(self) -> PayrollRunCreate:
+        if self.mode == "MILESTONE":
+            if self.milestone_id is None or self.period is not None:
+                msg = "MILESTONE runs require milestone_id and no period"
+                raise ValueError(msg)
+        elif self.period is None or self.milestone_id is not None:
+            msg = "MONTHLY runs require period and no milestone_id"
+            raise ValueError(msg)
+        return self
+
+
+class PayrollLineUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    owner_action: OwnerAction
+    note: str | None = Field(default=None, max_length=200)
+
+
+class PayrollSendRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirm: bool
+    approve_run_flags: list[str] = Field(default_factory=list)
+    # Required: this endpoint moves money.
+    idempotency_key: str = Field(..., min_length=1, max_length=64)
+
+
+class PayrollSendResponse(BaseModel):
+    run_id: str
+    status: Literal["SENT"]
+    sender_batch_id: str
+    paypal_batch_id: str
+    batch_status: str
+    total: Decimal
+    lines_sent: int
+    lines_excluded: int
+
+
+class MarginRow(BaseModel):
+    milestone_id: str
+    milestone_code: str
+    cash_in: Decimal
+    invoiced_open: Decimal
+    paid_to_team: Decimal
+    pending_to_team: Decimal
+    margin: Decimal
+    margin_pct: Decimal
+    payroll_status: PayrollRunStatus | None = None
+
+
+class MarginSummary(BaseModel):
+    cash_in: Decimal
+    paid_to_team: Decimal
+    margin: Decimal
+
+
+class MarginResponse(BaseModel):
+    rows: list[MarginRow]
+    summary: MarginSummary
+
+
+# GuardResult / LeashDecision / RemediationSentBy are defined after these classes.
+SimulatorPaymentResponse.model_rebuild()
+LedgerRow.model_rebuild()
