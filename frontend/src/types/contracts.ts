@@ -222,7 +222,7 @@ export interface LeashRule {
 export interface LeashPolicy {
   version: number;
   rules: LeashRule[];
-  payroll_margin_limit_pct: string; // Decimal serialized as "80.00"-style, default 80
+  payroll_margin_limit_pct: string; // Decimal serialized without padding, e.g. "80" (default)
   email_change_window_days: number; // default 7
 }
 
@@ -301,7 +301,7 @@ export interface DecisionLogEntry {
   decision: LeashDecision;
   rule_ids: string[];
   amount: string | null;
-  reason: string;
+  reason: string; // max 200 chars
   actor: DecisionActor;
 }
 
@@ -369,7 +369,7 @@ export interface PayrollLineUpdate {
 }
 
 export interface PayrollSendRequest {
-  confirm: boolean;
+  confirm: true;
   approve_run_flags?: string[];
   idempotency_key: string; // required: this endpoint moves money
 }
