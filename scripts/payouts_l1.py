@@ -1,7 +1,7 @@
-#!/usr/bin/env python3
 """Payouts L1 proof: send a real 2-item PayPal sandbox Payouts batch and verify it.
 
-Run from the repo root: ``python -m scripts.payouts_l1 --to A --to B [--save-fixtures]``.
+Run from the repo root:
+``python -m scripts.payouts_l1 --to EMAIL --to EMAIL [--save-fixtures]``.
 The token comes only from ``get_auth_manager()``; the base URL from ``get_settings()``
 (sandbox-guarded). Full recipient emails are never printed or logged.
 """
@@ -25,7 +25,7 @@ import httpx
 from ulid import ULID
 
 from backend.app.config import get_settings
-from backend.app.services.paypal.auth import get_auth_manager
+from backend.app.services.paypal.auth import PayPalAuthError, get_auth_manager
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,9 @@ NON_TERMINAL_BATCH = {"NEW", "PENDING", "PROCESSING"}
 NON_TERMINAL_ITEM = {"PENDING", "ONHOLD"}
 RETRY_DELAYS_S = (1, 3)
 EVENT_TYPE_ITEM_SUCCEEDED = "PAYMENT.PAYOUTS-ITEM.SUCCEEDED"
+MAX_AMOUNT = Decimal("10.00")
+STEP_ERRORS = (httpx.HTTPError, PayPalAuthError)
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 _CURRENCY_RE = re.compile(r"[A-Z]{3}")
 _AMOUNT_RE = re.compile(r"[0-9]+\.[0-9]{2}")
 
@@ -211,21 +214,29 @@ class PayoutsClient:
         result: dict[str, Any] = response.json()
         return result
 
-    async def latest_webhook_event(self, event_type: str) -> dict[str, Any] | None:
-        """Best effort: the newest stored webhook event of this type, else ``None``."""
+    async def latest_webhook_event(
+        self, event_type: str, payout_batch_id: str
+    ) -> dict[str, Any] | None:
+        """Best effort: newest stored event of this type for THIS batch, else ``None``."""
         try:
             response = await self._send(
                 "GET",
                 "/v1/notifications/webhooks-events",
-                params={"event_type": event_type, "page_size": 1},
+                params={"event_type": event_type, "page_size": 10},
             )
             if response.status_code != 200:
                 return None
             events = response.json().get("events") or []
-        except (httpx.HTTPError, ValueError, AttributeError):
+        except (*STEP_ERRORS, ValueError, AttributeError):
             return None
-        first = events[0] if events else None
-        return first if isinstance(first, dict) else None
+        for event in events:
+            resource = event.get("resource") if isinstance(event, dict) else None
+            if (
+                isinstance(resource, dict)
+                and resource.get("payout_batch_id") == payout_batch_id
+            ):
+                return event  # type: ignore[no-any-return]
+        return None
 
 
 @dataclass
@@ -265,6 +276,40 @@ def _scrub(text: str, recipients: list[str]) -> str:
     return text
 
 
+def _debug_suffix(response: httpx.Response) -> str:
+    debug_id = response.headers.get("paypal-debug-id")
+    return f" paypal-debug-id={debug_id}" if debug_id else ""
+
+
+def _classify_duplicate(
+    response: httpx.Response, body: dict[str, Any], recipients: list[str]
+) -> Check:
+    """Pass only when PayPal rejects the reused sender_batch_id for that reason."""
+    name = "duplicate_batch_rejected"
+    status = response.status_code
+    if status == 201:
+        second = (body.get("batch_header") or {}).get("payout_batch_id")
+        return Check(
+            name,
+            False,
+            "DOUBLE PAY: PayPal accepted a reused sender_batch_id "
+            f"(second payout_batch_id={second})",
+        )
+    if not 400 <= status < 500 or "batch_header" in body:
+        return Check(name, False, f"unexpected HTTP {status}{_debug_suffix(response)}")
+    details = [d for d in body.get("details") or [] if isinstance(d, dict)]
+    issue = details[0].get("issue") if details else None
+    texts = [str(body.get("name", "")), str(body.get("message", ""))]
+    for detail in details:
+        texts.extend(str(detail.get(k, "")) for k in ("issue", "field", "description"))
+    blob = " ".join(texts).lower()
+    if "sender_batch_id" in blob or "already" in blob:
+        text = f"HTTP {status} {body.get('name')}: {issue}"
+        return Check(name, True, _scrub(text, recipients))
+    text = f"rejected for another reason: {body.get('name')}: {issue}"
+    return Check(name, False, _scrub(text, recipients) + _debug_suffix(response))
+
+
 async def run_l1(
     client: PayoutsClient,
     recipients: list[str],
@@ -275,19 +320,36 @@ async def run_l1(
     result = L1Result()
     body = build_batch(run_id, recipients, amount, currency)
     sent_ids = [item["sender_item_id"] for item in body["items"]]
+    sender_batch_id = body["sender_batch_header"]["sender_batch_id"]
+    masked = ", ".join(mask_email(email) for email in recipients)
+    print(f"sender_batch_id: {sender_batch_id}")
+    print(f"recipients: {masked}")
 
     # 1. Create the batch.
-    created = await client.create_batch(body, payout_request_id(run_id, "payout"))
+    reconcile = (
+        f"batch may exist at PayPal: reconcile sender_batch_id {sender_batch_id} "
+        "before re-running"
+    )
+    try:
+        created = await client.create_batch(body, payout_request_id(run_id, "payout"))
+    except STEP_ERRORS as exc:
+        result.checks.append(Check("batch_created", False, type(exc).__name__))
+        if isinstance(exc, httpx.HTTPError):
+            print(reconcile)
+        return result
     created_body = _json_or_empty(created)
     header = created_body.get("batch_header") or {}
     created_ok = created.status_code == 201 and header.get("batch_status") == "PENDING"
+    detail = f"HTTP {created.status_code} batch_status={header.get('batch_status')}"
     result.checks.append(
         Check(
             "batch_created",
             created_ok,
-            f"HTTP {created.status_code} batch_status={header.get('batch_status')}",
+            detail if created_ok else detail + _debug_suffix(created),
         )
     )
+    if created.status_code >= 500:
+        print(reconcile)
     if created.status_code != 201:
         return result
     result.payloads["batch_create_201"] = created_body
@@ -297,85 +359,113 @@ async def run_l1(
             Check("batch_id_present", False, "no payout_batch_id in 201")
         )
         return result
+    print(f"payout_batch_id: {batch_id}")
 
     # 2. Poll on simulated time until terminal or POLL_MAX_S.
     elapsed = 0
-    final = await client.get_batch(batch_id)
-    while not is_batch_terminal(final) and elapsed < POLL_MAX_S:
-        await client.sleep(POLL_INTERVAL_S)
-        elapsed += POLL_INTERVAL_S
+    final: dict[str, Any] | None = None
+    try:
         final = await client.get_batch(batch_id)
-    result.payloads["batch_final"] = final
+        while not is_batch_terminal(final) and elapsed < POLL_MAX_S:
+            await client.sleep(POLL_INTERVAL_S)
+            elapsed += POLL_INTERVAL_S
+            final = await client.get_batch(batch_id)
+    except STEP_ERRORS as exc:
+        result.checks.append(Check("batch_poll", False, type(exc).__name__))
+    items: list[dict[str, Any]] = []
+    if final is not None:
+        result.payloads["batch_final"] = final
 
-    # 3. Batch and item outcomes.
-    status = (final.get("batch_header") or {}).get("batch_status")
-    result.checks.append(
-        Check(
-            "batch_success",
-            status == "SUCCESS",
-            f"batch_status={status} after {elapsed}s",
+        # 3. Batch and item outcomes.
+        status = (final.get("batch_header") or {}).get("batch_status")
+        result.checks.append(
+            Check(
+                "batch_success",
+                status == "SUCCESS",
+                f"batch_status={status} after {elapsed}s",
+            )
         )
-    )
-    items: list[dict[str, Any]] = final.get("items") or []
-    echoed = [(i.get("payout_item") or {}).get("sender_item_id") for i in items]
-    all_success = bool(items) and all(
-        i.get("transaction_status") == "SUCCESS" for i in items
-    )
-    ids_match = sorted(str(e) for e in echoed) == sorted(sent_ids)
-    if all_success and ids_match:
-        items_detail = f"{len(items)} items SUCCESS, sender_item_ids echoed"
-    else:
-        listing = ", ".join(
-            f"{mask_email(str((i.get('payout_item') or {}).get('receiver', '?')))}"
-            f" -> {i.get('transaction_status')}"
-            for i in items
+        items = final.get("items") or []
+        echoed = [(i.get("payout_item") or {}).get("sender_item_id") for i in items]
+        all_success = bool(items) and all(
+            i.get("transaction_status") == "SUCCESS" for i in items
         )
-        items_detail = f"{listing or 'no items'}; sender_item_ids_match={ids_match}"
-    result.checks.append(
-        Check("items_success", all_success and ids_match, items_detail)
-    )
+        ids_match = sorted(str(e) for e in echoed) == sorted(sent_ids)
+        if all_success and ids_match:
+            items_detail = f"{len(items)} items SUCCESS, sender_item_ids echoed"
+        else:
+            listing = ", ".join(
+                f"{mask_email(str((i.get('payout_item') or {}).get('receiver', '?')))}"
+                f" -> {i.get('transaction_status')}"
+                for i in items
+            )
+            items_detail = f"{listing or 'no items'}; sender_item_ids_match={ids_match}"
+        result.checks.append(
+            Check("items_success", all_success and ids_match, items_detail)
+        )
 
     # 4. Resend the identical body: PayPal must reject the reused sender_batch_id.
-    dup = await client.create_batch(body, payout_request_id(run_id, "payout-resend"))
-    dup_body = _json_or_empty(dup)
-    if dup.status_code in (400, 422) and "batch_header" not in dup_body:
-        details = dup_body.get("details") or []
-        issue = (
-            details[0].get("issue")
-            if details and isinstance(details[0], dict)
-            else None
+    try:
+        dup = await client.create_batch(
+            body, payout_request_id(run_id, "payout-resend")
         )
-        dup_ok = True
-        dup_detail = _scrub(
-            f"HTTP {dup.status_code} {dup_body.get('name')}: {issue}", recipients
-        )
-    elif dup.status_code == 201:
-        dup_ok, dup_detail = (
-            False,
-            "DOUBLE PAY: PayPal accepted a reused sender_batch_id",
+    except STEP_ERRORS as exc:
+        result.checks.append(
+            Check("duplicate_batch_rejected", False, type(exc).__name__)
         )
     else:
-        dup_ok, dup_detail = False, f"unexpected HTTP {dup.status_code}"
-    result.checks.append(Check("duplicate_batch_rejected", dup_ok, dup_detail))
-    result.payloads["duplicate_rejected"] = dup_body
+        dup_body = _json_or_empty(dup)
+        result.checks.append(_classify_duplicate(dup, dup_body, recipients))
+        key = (
+            "duplicate_accepted_201" if dup.status_code == 201 else "duplicate_rejected"
+        )
+        result.payloads[key] = dup_body
 
     # 5. One item lookup.
     if items and items[0].get("payout_item_id"):
-        result.payloads["item"] = await client.get_item(str(items[0]["payout_item_id"]))
+        try:
+            item_id = str(items[0]["payout_item_id"])
+            result.payloads["item"] = await client.get_item(item_id)
+        except STEP_ERRORS as exc:
+            result.checks.append(Check("item_lookup", False, type(exc).__name__))
 
-    # 6. Best-effort webhook event.
-    event = await client.latest_webhook_event(EVENT_TYPE_ITEM_SUCCEEDED)
+    # 6. Best-effort webhook event for this batch.
+    event = await client.latest_webhook_event(EVENT_TYPE_ITEM_SUCCEEDED, str(batch_id))
     if event is not None:
         result.payloads["webhook_item_succeeded"] = event
     return result
 
 
+def save_fixtures(
+    payloads: dict[str, Any], recipients: list[str], directory: Path | None = None
+) -> list[str]:
+    """Write redacted payloads; any email left after redaction becomes a placeholder."""
+    target = directory if directory is not None else FIXTURE_DIR
+    target.mkdir(parents=True, exist_ok=True)
+    keep = {f"sb-member{i}@personal.example.com" for i in range(1, len(recipients) + 1)}
+
+    def backstop(match: re.Match[str]) -> str:
+        return match.group(0) if match.group(0) in keep else "redacted@example.com"
+
+    saved: list[str] = []
+    for key, payload in payloads.items():
+        text = json.dumps(redact(payload, recipients), indent=2, ensure_ascii=False)
+        text = _EMAIL_RE.sub(backstop, text)
+        path = target / f"payouts_{key}.json"
+        path.write_text(text + "\n", encoding="utf-8")
+        saved.append(path.name)
+    return saved
+
+
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     def amount_type(text: str) -> Decimal:
         try:
-            return parse_amount(text)
+            value = parse_amount(text)
         except ValueError as exc:
             raise argparse.ArgumentTypeError(str(exc)) from exc
+        if value > MAX_AMOUNT:
+            raise argparse.ArgumentTypeError(f"amount must not exceed {MAX_AMOUNT}")
+        return value
 
     def currency_type(text: str) -> str:
         if not _CURRENCY_RE.fullmatch(text):
@@ -394,6 +484,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         parser.error("exactly 2 --to recipients are required")
     if any("@" not in email for email in args.to):
         parser.error("--to must be an email address")
+    if len({email.strip().lower() for email in args.to}) != 2:
+        parser.error("the two --to recipients must be different")
     return args
 
 
@@ -403,31 +495,26 @@ async def main(argv: list[str] | None = None) -> int:
     run_id = str(ULID()).lower()
     async with httpx.AsyncClient() as http:
         client = PayoutsClient(
-            get_settings().paypal_api_base_url, get_auth_manager(), http
+            get_settings().paypal_api_base_url,
+            get_auth_manager(),
+            http,
+            sleep=asyncio.sleep,
         )
         try:
             result = await run_l1(
                 client, recipients, args.amount, args.currency, run_id
             )
-        except httpx.HTTPError as exc:
+        except STEP_ERRORS as exc:
             print(f"FAIL request: {type(exc).__name__}")
             return 1
     for check in result.checks:
         print(f"{'PASS' if check.passed else 'FAIL'} {check.name}: {check.detail}")
-    created_header = (result.payloads.get("batch_create_201") or {}).get(
-        "batch_header"
-    ) or {}
-    print(f"sender_batch_id: fd-l1-{run_id}")
-    print(f"payout_batch_id: {created_header.get('payout_batch_id', '-')}")
     if args.save_fixtures:
-        FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
-        for key, payload in result.payloads.items():
-            path = FIXTURE_DIR / f"payouts_{key}.json"
-            text = json.dumps(redact(payload, recipients), indent=2, ensure_ascii=False)
-            path.write_text(text + "\n", encoding="utf-8")
-            print(f"saved {path.name}")
+        for name in save_fixtures(result.payloads, recipients):
+            print(f"saved {name}")
     return 0 if result.ok else 1
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     raise SystemExit(asyncio.run(main()))
