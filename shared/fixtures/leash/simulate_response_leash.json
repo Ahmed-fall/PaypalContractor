@@ -3,7 +3,7 @@
   "paypal_capture_id": "2GG279541U471931P",
   "evaluation": {
     "discrepancy_type": "UNDERPAID_AND_LATE",
-    "discrepancy_status": "PENDING_APPROVAL",
+    "discrepancy_status": "REMEDIATED",
     "is_compliant": false,
     "expected_amount": "1000.00",
     "captured_amount": "850.00",

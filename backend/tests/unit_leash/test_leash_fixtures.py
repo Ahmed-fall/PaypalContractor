@@ -188,3 +188,12 @@ def test_simulate_leash_allow_is_within_g01() -> None:
     assert sim.leash.rule_ids == ["G-01"]
     assert sim.evaluation.total_remediation_amount <= threshold
     assert sim.payroll_run_id == "prn_0001"
+
+
+def test_simulate_leash_allow_marks_remediated() -> None:
+    sim = c.SimulatorPaymentResponse.model_validate(
+        _load("simulate_response_leash.json")
+    )
+    assert sim.leash is not None
+    assert sim.leash.decision == c.LeashDecision.ALLOW
+    assert sim.evaluation.discrepancy_status == c.DiscrepancyStatus.REMEDIATED
