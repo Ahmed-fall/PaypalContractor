@@ -77,8 +77,16 @@ def _run(name: str) -> c.PayrollRunOut:
 def test_fixture_conforms_to_schema(filename: str, model: type) -> None:
     payload = _load(filename)
     reencoded = json.loads(model.model_validate(payload).model_dump_json())
-    for key, value in _money_values(reencoded):
-        assert isinstance(value, str), f"{filename}: {key} must serialize as a string"
+    for source, node in (("raw", payload), ("re-dumped", reencoded)):
+        for key, value in _money_values(node):
+            assert isinstance(value, str), (
+                f"{filename}: {key} must be a string in the {source} JSON"
+            )
+
+
+def test_money_check_rejects_float_in_raw_json() -> None:
+    raw = {"total": 720.0, "lines": [{"gross": "10.00"}]}
+    assert [k for k, v in _money_values(raw) if not isinstance(v, str)] == ["total"]
 
 
 def test_every_fixture_file_is_covered() -> None:
