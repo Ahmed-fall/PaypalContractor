@@ -1,0 +1,10 @@
+{
+  "run_id": "prn_0001",
+  "status": "SENT",
+  "sender_batch_id": "fd-ms01-prn_0001",
+  "paypal_batch_id": "5UXD2E8A7EBQJ",
+  "batch_status": "PENDING",
+  "total": "420.00",
+  "lines_sent": 2,
+  "lines_excluded": 1
+}

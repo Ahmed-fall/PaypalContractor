@@ -1,0 +1,20 @@
+{
+  "items": [
+    {
+      "decision_id": "lsd_0007",
+      "created_at": "2026-10-20T14:22:12Z",
+      "policy_version": 2,
+      "action_type": "SEND_REMEDIATION_INVOICE",
+      "subject_type": "discrepancy",
+      "subject_id": "dsc_01J9Z99",
+      "decision": "ALLOW",
+      "rule_ids": [
+        "G-01"
+      ],
+      "amount": "200.00",
+      "reason": "$200.00 is within your $250.00 auto-send limit and the breached clause is quoted.",
+      "actor": "leash"
+    }
+  ],
+  "next_cursor": null
+}
