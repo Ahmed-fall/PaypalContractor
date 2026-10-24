@@ -10,11 +10,11 @@ The AI never computes money; it extracts parameters and writes prose only.
 from __future__ import annotations
 
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from enum import Enum
-from typing import List, Optional
+from typing import List, Literal, Optional
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 class ContractStatus(str, Enum):
@@ -219,3 +219,107 @@ class RemindResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str = "ok"
     paypal_sandbox_connected: bool
+
+
+# --- Leash (Rev 2.1 §7.5 Interface 2; owner P5, approved by P4) ---
+
+
+class LeashDecision(str, Enum):
+    ALLOW = "ALLOW"
+    ASK = "ASK"
+    DENY = "DENY"
+
+
+class GuardAction(str, Enum):
+    SEND_REMEDIATION_INVOICE = "SEND_REMEDIATION_INVOICE"
+    PAY_TEAM_MEMBER = "PAY_TEAM_MEMBER"
+    SEND_PAYROLL_BATCH = "SEND_PAYROLL_BATCH"
+
+
+PayrollMode = Literal["MILESTONE", "MONTHLY"]
+PayrollRunStatus = Literal[
+    "PREPARED", "CHECKED", "AWAITING_APPROVAL", "SENT", "PAID", "PARTIAL", "FAILED"
+]
+PayoutStatus = Literal["PENDING", "SUCCESS", "UNCLAIMED", "FAILED"]
+OwnerAction = Literal["APPROVED", "EXCLUDED"]
+# "rate" goes beyond the plan comment: A.3 rate_in_file feeds PR-04.
+TimesheetField = Literal["member", "work_date", "hours", "milestone_code", "rate"]
+RuleConditionValue = bool | int | float | str
+
+
+class LeashRule(BaseModel):
+    id: str = Field(..., min_length=1, max_length=16)
+    applies_to: GuardAction
+    when: dict[str, RuleConditionValue]
+    outcome: LeashDecision
+    source_text: str
+
+    @field_validator("when")
+    @classmethod
+    def _amount_thresholds_are_decimal_strings(
+        cls, v: dict[str, RuleConditionValue]
+    ) -> dict[str, RuleConditionValue]:
+        msg = "amount thresholds must be 2-dp decimal strings"
+        for key, value in v.items():
+            if not key.startswith("amount_"):
+                continue
+            if not isinstance(value, str):
+                raise ValueError(msg)  # noqa: TRY004 - pydantic needs ValueError
+            try:
+                d = Decimal(value)
+            except InvalidOperation:
+                raise ValueError(msg) from None
+            if not d.is_finite() or d < 0:
+                raise ValueError(msg)
+            exponent = d.as_tuple().exponent
+            if not isinstance(exponent, int) or exponent < -2:
+                raise ValueError(msg)
+        return v
+
+
+class LeashPolicy(BaseModel):
+    version: int = Field(..., ge=1)
+    rules: list[LeashRule]
+    payroll_margin_limit_pct: Decimal = Field(default=Decimal(80), gt=0, le=100)
+    email_change_window_days: int = Field(default=7, ge=0)
+
+
+class GuardResult(BaseModel):
+    decision: LeashDecision
+    rule_ids: list[str]
+    reason: str = Field(..., max_length=200)
+    decision_id: str
+
+
+class ColumnMappingProposal(BaseModel):
+    mapping: dict[str, TimesheetField]
+    confidence: dict[str, float]
+
+
+class PayrollLineOut(BaseModel):
+    line_id: str
+    member_name: str
+    payout_email: EmailStr
+    hours: Decimal = Field(..., decimal_places=2)
+    rate: Decimal = Field(..., decimal_places=2)
+    gross: Decimal = Field(..., decimal_places=2)
+    decision: LeashDecision
+    flags: list[str]
+    reason: str | None = Field(default=None, max_length=200)
+    owner_action: OwnerAction | None = None
+    payout_status: PayoutStatus | None = None
+
+
+class PayrollRunOut(BaseModel):
+    run_id: str
+    mode: PayrollMode
+    milestone_id: str | None = None
+    period: str | None = None
+    status: PayrollRunStatus
+    total: Decimal = Field(..., decimal_places=2)
+    cash_in: Decimal = Field(..., decimal_places=2)
+    cash_used_pct: Decimal = Field(..., decimal_places=2)
+    run_decision: LeashDecision
+    run_flags: list[str]
+    lines: list[PayrollLineOut]
+    sender_batch_id: str | None = None
