@@ -9,10 +9,11 @@ The AI never computes money; it extracts parameters and writes prose only.
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from enum import Enum
-from typing import List, Literal, Optional
+from typing import Annotated, List, Literal, Optional
 
 from pydantic import (
     BaseModel,
@@ -256,6 +257,7 @@ OwnerAction = Literal["APPROVED", "EXCLUDED"]
 # "rate" goes beyond the plan comment: A.3 rate_in_file feeds PR-04.
 TimesheetField = Literal["member", "work_date", "hours", "milestone_code", "rate"]
 RuleConditionValue = bool | int | float | str
+_MONEY_2DP = re.compile(r"[0-9]+\.[0-9]{2}")
 
 
 class LeashRule(BaseModel):
@@ -272,20 +274,18 @@ class LeashRule(BaseModel):
     ) -> dict[str, RuleConditionValue]:
         msg = "amount thresholds must be 2-dp decimal strings"
         for key, value in v.items():
-            if not key.startswith("amount_"):
+            if "amount" not in key:
                 continue
-            if not isinstance(value, str):
-                raise ValueError(msg)  # noqa: TRY004 - pydantic needs ValueError
-            try:
-                d = Decimal(value)
-            except InvalidOperation:
-                raise ValueError(msg) from None
-            if not d.is_finite() or d < 0:
-                raise ValueError(msg)
-            exponent = d.as_tuple().exponent
-            if not isinstance(exponent, int) or exponent < -2:
+            if not isinstance(value, str) or not _MONEY_2DP.fullmatch(value):
                 raise ValueError(msg)
         return v
+
+    @model_validator(mode="after")
+    def _allow_needs_a_condition(self) -> LeashRule:
+        if self.outcome == LeashDecision.ALLOW and not self.when:
+            msg = "an ALLOW rule needs at least one condition"
+            raise ValueError(msg)
+        return self
 
 
 class LeashPolicy(BaseModel):
@@ -304,7 +304,7 @@ class GuardResult(BaseModel):
 
 class ColumnMappingProposal(BaseModel):
     mapping: dict[str, TimesheetField]
-    confidence: dict[str, float]
+    confidence: dict[str, Annotated[float, Field(ge=0, le=1)]]
 
 
 class PayrollLineOut(BaseModel):
@@ -397,7 +397,12 @@ class TeamMemberCreate(BaseModel):
 
     name: str = Field(..., min_length=1, max_length=120)
     payout_email: EmailStr
-    hourly_rate: Decimal = Field(..., gt=0, decimal_places=2)
+    hourly_rate: Decimal = Field(..., gt=0, decimal_places=2, max_digits=8)
+
+    @field_validator("payout_email", mode="after")
+    @classmethod
+    def _normalise_email(cls, v: str) -> str:
+        return v.strip().lower()
 
 
 class TeamMemberUpdate(BaseModel):
@@ -405,8 +410,25 @@ class TeamMemberUpdate(BaseModel):
 
     name: str | None = Field(default=None, min_length=1, max_length=120)
     payout_email: EmailStr | None = None
-    hourly_rate: Decimal | None = Field(default=None, gt=0, decimal_places=2)
+    hourly_rate: Decimal | None = Field(
+        default=None, gt=0, decimal_places=2, max_digits=8
+    )
     active: bool | None = None
+
+    @field_validator("payout_email", mode="after")
+    @classmethod
+    def _normalise_email(cls, v: str | None) -> str | None:
+        return None if v is None else v.strip().lower()
+
+    @model_validator(mode="after")
+    def _no_nulls_or_empty_body(self) -> TeamMemberUpdate:
+        if not self.model_fields_set:
+            msg = "at least one field must be provided"
+            raise ValueError(msg)
+        if any(getattr(self, f) is None for f in self.model_fields_set):
+            msg = "fields may be omitted but not null"
+            raise ValueError(msg)
+        return self
 
 
 class TeamMemberOut(BaseModel):
@@ -479,10 +501,19 @@ class PayrollLineUpdate(BaseModel):
 class PayrollSendRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    confirm: bool
+    confirm: Literal[True]
     approve_run_flags: list[str] = Field(default_factory=list)
     # Required: this endpoint moves money.
     idempotency_key: str = Field(..., min_length=1, max_length=64)
+
+    @field_validator("confirm", mode="before")
+    @classmethod
+    def _confirm_is_boolean_true(cls, v: object) -> object:
+        # Literal[True] alone would coerce 1 to True; money moves need a real boolean.
+        if v is not True:
+            msg = "confirm must be the boolean true"
+            raise ValueError(msg)
+        return v
 
 
 class PayrollSendResponse(BaseModel):

@@ -31,7 +31,22 @@ def test_rule_when_preserves_value_types() -> None:
 
 @pytest.mark.parametrize(
     "bad",
-    [250.0, 250, "abc", "250.001", True, "NaN", "Infinity", "-1.00"],
+    [
+        250.0,
+        250,
+        "abc",
+        "250.001",
+        True,
+        "NaN",
+        "Infinity",
+        "-1.00",
+        " 250.00 ",
+        "1_000.00",
+        "-0.00",
+        "1E+2",
+        "250",
+        "250.0",
+    ],
 )
 def test_rule_amount_threshold_must_be_decimal_string(bad: object) -> None:
     with pytest.raises(ValidationError):
@@ -42,6 +57,37 @@ def test_rule_amount_threshold_must_be_decimal_string(bad: object) -> None:
             outcome="ASK",
             source_text="x",
         )
+
+
+@pytest.mark.parametrize("key", ["amount", "max_amount_usd"])
+def test_any_amount_key_is_checked(key: str) -> None:
+    with pytest.raises(ValidationError):
+        c.LeashRule(
+            id="G-02",
+            applies_to="SEND_REMEDIATION_INVOICE",
+            when={key: 250.0},
+            outcome="ASK",
+            source_text="x",
+        )
+
+
+def test_allow_rule_requires_a_condition() -> None:
+    with pytest.raises(ValidationError):
+        c.LeashRule(
+            id="G-09",
+            applies_to="SEND_REMEDIATION_INVOICE",
+            when={},
+            outcome="ALLOW",
+            source_text="x",
+        )
+    ok = c.LeashRule(
+        id="G-09",
+        applies_to="SEND_REMEDIATION_INVOICE",
+        when={},
+        outcome="ASK",
+        source_text="x",
+    )
+    assert ok.when == {}
 
 
 def test_guard_result_reason_capped_at_200() -> None:
@@ -157,3 +203,44 @@ def test_detective_models_leash_fields_default_none() -> None:
     for row in rows:
         lr = c.LedgerRow.model_validate(row)
         assert lr.leash_decision is None and lr.remediation_sent_by is None
+
+
+def test_team_member_email_is_lowercased() -> None:
+    raw = " Omar.New@Personal.Example.COM "
+    want = "omar.new@personal.example.com"
+    created = c.TeamMemberCreate(name="Omar", payout_email=raw, hourly_rate="10.00")  # type: ignore[arg-type]
+    assert created.payout_email == want
+    assert c.TeamMemberUpdate(payout_email=raw).payout_email == want  # type: ignore[arg-type]
+
+
+def test_team_member_update_rejects_null_and_empty() -> None:
+    with pytest.raises(ValidationError):
+        c.TeamMemberUpdate(name=None)
+    with pytest.raises(ValidationError):
+        c.TeamMemberUpdate()
+    assert c.TeamMemberUpdate(active=False).active is False
+
+
+@pytest.mark.parametrize("bad", [False, 1, "yes"])
+def test_send_request_confirm_must_be_literal_true(bad: object) -> None:
+    with pytest.raises(ValidationError):
+        c.PayrollSendRequest(confirm=bad, idempotency_key="k1")  # type: ignore[arg-type]
+    assert c.PayrollSendRequest(confirm=True, idempotency_key="k1").confirm is True
+
+
+def test_hourly_rate_fits_numeric_8_2() -> None:
+    with pytest.raises(ValidationError):
+        c.TeamMemberCreate(
+            name="Omar", payout_email="omar@example.com", hourly_rate="1234567890.00"
+        )  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        c.TeamMemberUpdate(hourly_rate="1234567890.00")  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        c.TeamMemberUpdate(name="x" * 121)
+
+
+def test_mapping_confidence_bounded() -> None:
+    with pytest.raises(ValidationError):
+        c.ColumnMappingProposal(mapping={"Pay": "rate"}, confidence={"Pay": 7.0})
+    ok = c.ColumnMappingProposal(mapping={"Pay": "rate"}, confidence={"Pay": 0.7})
+    assert ok.confidence["Pay"] == 0.7
