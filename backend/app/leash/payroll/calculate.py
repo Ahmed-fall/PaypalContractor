@@ -1,7 +1,9 @@
 """Decimal pay calculation for one milestone.
 
 Gross is hours x the roster rate (never the rate in the file), quantized to cents with
-ROUND_HALF_UP. No float, no I/O, no clock reads.
+ROUND_HALF_UP. A line with any entry of hours <= 0 or an unknown member has gross 0.00
+(``hours`` still reports the true sum), so it can never reduce the run total.
+No float, no I/O, no clock reads. All datetimes elsewhere must be timezone-aware UTC.
 """
 
 from __future__ import annotations
@@ -33,10 +35,10 @@ def build_lines(
     entries: Sequence[TimesheetEntry], milestone_code: str, roster: InMemoryRoster
 ) -> tuple[DraftLine, ...]:
     """One line per member_key for the milestone, in first-seen order."""
-    wanted = milestone_code.upper()
+    wanted = milestone_code.strip().upper()
     groups: dict[str, list[TimesheetEntry]] = {}
     for entry in entries:
-        if entry.milestone_code.upper() == wanted:
+        if entry.milestone_code.strip().upper() == wanted:
             groups.setdefault(entry.member_key, []).append(entry)
 
     lines: list[DraftLine] = []
@@ -49,7 +51,10 @@ def build_lines(
             display = group[0].member_name
         else:
             rate = member.hourly_rate
-            gross = (hours * rate).quantize(_CENT, rounding=ROUND_HALF_UP)
+            if any(e.hours <= 0 for e in group):
+                gross = _ZERO
+            else:
+                gross = (hours * rate).quantize(_CENT, rounding=ROUND_HALF_UP)
             display = member.name
         lines.append(
             DraftLine(
@@ -71,15 +76,20 @@ def run_total(
     """Sum of gross over lines that are neither excluded nor denied (by member_key)."""
     total = _ZERO
     for line in lines:
-        if line.member_key in excluded or line.member_key in denied:
+        if line.gross <= 0 or line.member_key in excluded or line.member_key in denied:
             continue
         total += line.gross
     return total
 
 
 def cash_used_pct(total: Decimal, cash_in: Decimal) -> Decimal:
-    """Share of cash in spent on this run, 2 dp, capped at 999.99."""
-    if cash_in == 0:
-        return _PCT_CAP if total > 0 else _ZERO
+    """Share of cash in spent on this run, 2 dp, clamped to 0.00..999.99.
+
+    A total <= 0 is 0.00. A positive total against cash_in <= 0 is 999.99.
+    """
+    if total <= 0:
+        return _ZERO
+    if cash_in <= 0:
+        return _PCT_CAP
     pct = (total / cash_in * 100).quantize(_CENT, rounding=ROUND_HALF_UP)
     return min(pct, _PCT_CAP)

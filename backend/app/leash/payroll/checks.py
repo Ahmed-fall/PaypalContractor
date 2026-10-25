@@ -2,13 +2,14 @@
 
 Pure and synchronous: histories, policy and ``now`` are passed in. A line's decision is
 the strictest of its flags (DENY > ASK > ALLOW); flags are unique and sorted by id.
+All datetimes must be timezone-aware UTC.
 """
 
 from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from ...schemas.contracts import LeashDecision, LeashPolicy
@@ -51,8 +52,8 @@ def _pr02_deny(line: DraftLine) -> bool:
 
 
 def _pr02_ask(line: DraftLine) -> bool:
-    per_day: dict[object, Decimal] = {}
-    per_week: dict[object, Decimal] = {}
+    per_day: dict[date, Decimal] = {}
+    per_week: dict[tuple[int, int], Decimal] = {}
     for e in line.entries:
         iso = e.work_date.isocalendar()
         per_day[e.work_date] = per_day.get(e.work_date, Decimal(0)) + e.hours
@@ -81,6 +82,10 @@ def check_line(
     policy: LeashPolicy,
     now: datetime,
 ) -> LineCheck:
+    if now.tzinfo is None:
+        msg = "now must be timezone-aware"
+        raise ValueError(msg)
+    paid = {c.strip().upper() for c in history.paid_milestones}
     flags: set[str] = set()
     deny = False
 
@@ -102,7 +107,7 @@ def check_line(
             for e in line.entries
         ):
             flags.add("PR-04")
-        if milestone_code.upper() in history.paid_milestones:
+        if milestone_code.strip().upper() in paid:
             flags.add("PR-07")
 
     ordered = tuple(sorted(flags))

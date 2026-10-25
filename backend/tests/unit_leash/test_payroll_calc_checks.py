@@ -367,3 +367,70 @@ def test_checks_are_pure() -> None:
     assert check_run(D("1.00"), D("2.00"), POLICY) == check_run(
         D("1.00"), D("2.00"), POLICY
     )
+
+
+def test_negative_hours_line_does_not_reduce_total_or_hide_pr06() -> None:
+    roster = InMemoryRoster()
+    roster.add(_member("Omar"))
+    roster.add(_member("Sara", "22.00"))
+    entries = [
+        _entry("Omar", hours="-500.00", row=2),
+        _entry("Sara", hours="10.00", row=3),
+    ]
+    lines = build_lines(entries, "MS-01", roster)
+    assert lines[0].hours == D("-500.00")
+    assert lines[0].gross == D("0.00")
+    total = run_total(lines, excluded=[], denied=[])
+    assert total == D("220.00")
+    assert check_run(total, D("250.00"), POLICY).flags == ("PR-06",)
+
+
+def test_run_total_skips_non_positive_gross_whatever_denied_says() -> None:
+    line = DraftLine("x", None, "x", (), D("-1.00"), D("1.00"), D("-5.00"))
+    ok = DraftLine("y", None, "y", (), D("1.00"), D("1.00"), D("7.00"))
+    assert run_total([line, ok], [], []) == D("7.00")
+
+
+def test_mixed_positive_and_negative_hours_zero_gross_and_deny() -> None:
+    entries = [
+        _entry(hours="40.00", row=2),
+        _entry(hours="-38.00", day=date(2026, 11, 3), row=3),
+    ]
+    line = _line(_member("Omar"), entries)
+    assert line.hours == D("2.00")
+    assert line.gross == D("0.00")
+    assert _check(_member("Omar"), entries) == (DENY, ("PR-02",))
+
+
+@pytest.mark.parametrize("paid", ["ms-01", " MS-01", "Ms-01 "])
+def test_pr07_normalises_milestone_casing_and_spaces(paid: str) -> None:
+    hist = MemberHistory(PAID_BEFORE, frozenset({paid}))
+    decision, flags = _check(_member("Omar"), [_entry()], hist)
+    assert decision == DENY
+    assert "PR-07" in flags
+
+
+def test_pr07_normalises_requested_milestone() -> None:
+    line = _line(_member("Omar"), [_entry()])
+    hist = MemberHistory(PAID_BEFORE, frozenset({"MS-01"}))
+    res = check_line(line, hist, " ms-01 ", POLICY, NOW)
+    assert (res.decision, res.flags) == (DENY, ("PR-07",))
+
+
+def test_build_lines_strips_milestone() -> None:
+    roster = InMemoryRoster()
+    roster.add(_member("Omar"))
+    assert len(build_lines([_entry()], " ms-01 ", roster)) == 1
+
+
+def test_cash_used_pct_clamps_negative_and_negative_cash() -> None:
+    assert cash_used_pct(D("-5.00"), D("100.00")) == D("0.00")
+    assert cash_used_pct(D("-5.00"), D("-100.00")) == D("0.00")
+    assert cash_used_pct(D("5.00"), D("-100.00")) == D("999.99")
+    assert cash_used_pct(D("0.00"), D("-100.00")) == D("0.00")
+
+
+def test_check_line_requires_aware_now() -> None:
+    line = _line(_member("Omar"), [_entry()])
+    with pytest.raises(ValueError, match="timezone-aware"):
+        check_line(line, HIST, "MS-01", POLICY, NOW.replace(tzinfo=None))
