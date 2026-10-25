@@ -543,6 +543,7 @@ def test_duplicates_are_detected_across_zero_padded_codes() -> None:
         ({"odd"}, "odd", ("PR-07",)),
         ({"ms-01 "}, "MS-01", ("PR-07",)),
         ({"odd", "other"}, "MS-01", ()),
+        ({"MS-1"}, "odd", ()),
     ],
 )
 def test_pr07_unparseable_paid_codes_only_add_matches(
