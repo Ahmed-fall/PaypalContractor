@@ -13,7 +13,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from ...schemas.contracts import LeashDecision, LeashPolicy
-from .calculate import DraftLine
+from .calculate import DraftLine, milestone_key
 
 RUN_KEY = "__run__"
 MAX_HOURS_PER_DAY = Decimal(12)
@@ -44,7 +44,9 @@ def _pr01(
     changed = member.email_changed_at
     if now - changed <= timedelta(days=policy.email_change_window_days):
         return True
-    return history.last_paid_at is not None and changed > history.last_paid_at
+    # "Changed since last paid": the history's last payment, else the member's first.
+    last_paid = history.last_paid_at or member.first_paid_at
+    return last_paid is not None and changed > last_paid
 
 
 def _pr02_deny(line: DraftLine) -> bool:
@@ -64,9 +66,37 @@ def _pr02_ask(line: DraftLine) -> bool:
     )
 
 
+def _canonical(code: str) -> tuple[str, int] | str:
+    try:
+        return milestone_key(code)
+    except ValueError:
+        return code.strip().upper()
+
+
 def _has_duplicates(line: DraftLine) -> bool:
-    keys = Counter((e.work_date, e.milestone_code.upper()) for e in line.entries)
+    keys = Counter((e.work_date, _canonical(e.milestone_code)) for e in line.entries)
     return any(n > 1 for n in keys.values())
+
+
+def _already_paid(milestone_code: str, paid_milestones: frozenset[str]) -> bool:
+    """PR-07 test. Compares canonical keys (MS-1 equals MS-01).
+
+    If the run's code or any paid code is unparseable, the whole comparison falls
+    back to normalised strings (stripped, upper-cased): an unparseable code is paid
+    only when it is literally the same code, and never silently ignored.
+    """
+    try:
+        wanted = milestone_key(milestone_code)
+        return wanted in {milestone_key(c) for c in paid_milestones}
+    except ValueError:
+        text = milestone_code.strip().upper()
+        return text in {c.strip().upper() for c in paid_milestones}
+
+
+def _require_aware(value: datetime | None, name: str) -> None:
+    if value is not None and value.tzinfo is None:
+        msg = f"{name} must be timezone-aware"
+        raise ValueError(msg)
 
 
 def _decision(flags: tuple[str, ...], deny: bool) -> LeashDecision:
@@ -85,7 +115,10 @@ def check_line(
     if now.tzinfo is None:
         msg = "now must be timezone-aware"
         raise ValueError(msg)
-    paid = {c.strip().upper() for c in history.paid_milestones}
+    _require_aware(history.last_paid_at, "last_paid_at")
+    if line.member is not None:
+        _require_aware(line.member.email_changed_at, "email_changed_at")
+        _require_aware(line.member.first_paid_at, "first_paid_at")
     flags: set[str] = set()
     deny = False
 
@@ -107,7 +140,7 @@ def check_line(
             for e in line.entries
         ):
             flags.add("PR-04")
-        if milestone_code.strip().upper() in paid:
+        if _already_paid(milestone_code, history.paid_milestones):
             flags.add("PR-07")
 
     ordered = tuple(sorted(flags))

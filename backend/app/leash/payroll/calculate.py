@@ -8,6 +8,7 @@ No float, no I/O, no clock reads. All datetimes elsewhere must be timezone-aware
 
 from __future__ import annotations
 
+import re
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
@@ -18,6 +19,28 @@ from .timesheet import TimesheetEntry
 _CENT = Decimal("0.01")
 _ZERO = Decimal("0.00")
 _PCT_CAP = Decimal("999.99")
+_MILESTONE_CODE = re.compile(r"([A-Z]+)-(\d+)", re.ASCII)
+
+
+def milestone_key(code: str) -> tuple[str, int]:
+    """Canonical milestone identity: (UPPER prefix, number), so MS-1 equals MS-01.
+
+    Raises ValueError for a code that is not ``<LETTERS>-<ASCII digits>``. Callers
+    fail closed: ``build_lines`` matches nothing for such a code, and PR-07 falls back
+    to comparing the normalised (stripped, upper-cased) strings.
+    """
+    found = _MILESTONE_CODE.fullmatch(code.strip().upper())
+    if found is None:
+        msg = f"unparseable milestone code: {code!r}"
+        raise ValueError(msg)
+    return found.group(1), int(found.group(2))
+
+
+def _key_or_none(code: str) -> tuple[str, int] | None:
+    try:
+        return milestone_key(code)
+    except ValueError:
+        return None
 
 
 @dataclass(frozen=True)
@@ -35,10 +58,10 @@ def build_lines(
     entries: Sequence[TimesheetEntry], milestone_code: str, roster: InMemoryRoster
 ) -> tuple[DraftLine, ...]:
     """One line per member_key for the milestone, in first-seen order."""
-    wanted = milestone_code.strip().upper()
+    wanted = _key_or_none(milestone_code)
     groups: dict[str, list[TimesheetEntry]] = {}
     for entry in entries:
-        if entry.milestone_code.strip().upper() == wanted:
+        if wanted is not None and _key_or_none(entry.milestone_code) == wanted:
             groups.setdefault(entry.member_key, []).append(entry)
 
     lines: list[DraftLine] = []

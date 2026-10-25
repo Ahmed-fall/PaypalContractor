@@ -12,6 +12,7 @@ from backend.app.leash.payroll.calculate import (
     DraftLine,
     build_lines,
     cash_used_pct,
+    milestone_key,
     run_total,
 )
 from backend.app.leash.payroll.checks import (
@@ -157,8 +158,8 @@ CASES = [
         _member("Omar", changed=NOW - timedelta(days=20)),
         [_entry()],
         MemberHistory(None, frozenset()),
-        (ALLOW, ()),
-        id="pr01-outside-window-never-paid",
+        (ASK, ("PR-01",)),
+        id="pr01-outside-window-no-history-falls-back-to-first-paid",
     ),
     pytest.param(_member("Omar"), [_entry()], HIST, (ALLOW, ()), id="pr01-never"),
     pytest.param(
@@ -434,3 +435,101 @@ def test_check_line_requires_aware_now() -> None:
     line = _line(_member("Omar"), [_entry()])
     with pytest.raises(ValueError, match="timezone-aware"):
         check_line(line, HIST, "MS-01", POLICY, NOW.replace(tzinfo=None))
+
+
+# ------------------------------------------------------- milestone canonical key
+
+
+def test_milestone_key() -> None:
+    assert milestone_key(" ms-01 ") == ("MS", 1)
+    assert milestone_key("MS-1") == ("MS", 1)
+    assert milestone_key("ms-12") == ("MS", 12)
+    for bad in ("", "MS", "MS-", "-1", "MS-1A", "MS-١", "M1-2"):
+        with pytest.raises(ValueError, match="milestone"):
+            milestone_key(bad)
+
+
+def test_build_lines_matches_zero_padded_milestone() -> None:
+    roster = InMemoryRoster()
+    roster.add(_member("Omar"))
+    (line,) = build_lines([_entry(ms="MS-1")], "MS-01", roster)
+    assert line.hours == D("4.00")
+    assert len(build_lines([_entry(ms="MS-01")], "MS-1", roster)) == 1
+    assert build_lines([_entry(ms="MS-2")], "MS-01", roster) == ()
+
+
+def test_build_lines_unparseable_milestone_matches_nothing() -> None:
+    roster = InMemoryRoster()
+    roster.add(_member("Omar"))
+    assert build_lines([_entry(ms="MS-01")], "garbage", roster) == ()
+    assert build_lines([_entry(ms="garbage")], "garbage", roster) == ()
+
+
+def test_pr07_matches_zero_padded_paid_milestone() -> None:
+    hist = MemberHistory(PAID_BEFORE, frozenset({"MS-1"}))
+    assert _check(_member("Omar"), [_entry()], hist) == (DENY, ("PR-07",))
+
+
+def test_pr07_other_milestone_is_not_paid() -> None:
+    hist = MemberHistory(PAID_BEFORE, frozenset({"MS-2"}))
+    assert _check(_member("Omar"), [_entry()], hist) == (ALLOW, ())
+
+
+def test_pr07_unparseable_codes_fall_back_to_string_comparison() -> None:
+    line = _line(_member("Omar"), [_entry()])
+    odd = MemberHistory(PAID_BEFORE, frozenset({"odd", "MS-01"}))
+    res = check_line(line, odd, "MS-01", POLICY, NOW)
+    assert (res.decision, res.flags) == (DENY, ("PR-07",))
+    same = MemberHistory(PAID_BEFORE, frozenset({" Odd "}))
+    assert check_line(line, same, "odd", POLICY, NOW).flags == ("PR-07",)
+    other = MemberHistory(PAID_BEFORE, frozenset({"odd"}))
+    assert check_line(line, other, "MS-01", POLICY, NOW).flags == ()
+
+
+# ------------------------------------------------- PR-01 fallback and naive times
+
+
+def test_pr01_falls_back_to_first_paid_at_when_never_paid_by_history() -> None:
+    member = _member(
+        "Omar",
+        changed=NOW - timedelta(days=10),
+        first_paid=NOW - timedelta(days=30),
+    )
+    hist = MemberHistory(last_paid_at=None, paid_milestones=frozenset())
+    assert _check(member, [_entry()], hist) == (ASK, ("PR-01",))
+
+
+def test_pr01_no_history_and_never_paid_outside_window_is_not_flagged_by_pr01() -> None:
+    member = _member("Omar", changed=NOW - timedelta(days=10), first_paid=None)
+    hist = MemberHistory(last_paid_at=None, paid_milestones=frozenset())
+    assert _check(member, [_entry()], hist) == (ASK, ("PR-03",))
+
+
+def test_naive_datetimes_are_rejected() -> None:
+    naive = datetime(2026, 11, 3)
+    line = _line(_member("Omar", changed=naive), [_entry()])
+    with pytest.raises(ValueError, match="email_changed_at must be timezone-aware"):
+        check_line(line, HIST, "MS-01", POLICY, NOW)
+    line = _line(_member("Omar", first_paid=naive), [_entry()])
+    with pytest.raises(ValueError, match="first_paid_at must be timezone-aware"):
+        check_line(line, HIST, "MS-01", POLICY, NOW)
+    line = _line(_member("Omar"), [_entry()])
+    bad = MemberHistory(last_paid_at=naive, paid_milestones=frozenset())
+    with pytest.raises(ValueError, match="last_paid_at must be timezone-aware"):
+        check_line(line, bad, "MS-01", POLICY, NOW)
+
+
+def test_duplicates_are_detected_across_zero_padded_codes() -> None:
+    entries = [_entry(ms="MS-1", row=2), _entry(ms="MS-01", row=3)]
+    line = DraftLine(
+        member_key="omar",
+        member=_member("Omar"),
+        display_name="Omar",
+        entries=tuple(entries),
+        hours=D("8.00"),
+        rate=D("25.00"),
+        gross=D("200.00"),
+    )
+    assert check_line(line, HIST, "MS-01", POLICY, NOW).flags == ("PR-05",)
+    odd = replace(line, entries=(replace(entries[0], milestone_code="odd"),) * 2)
+    assert check_line(odd, HIST, "MS-01", POLICY, NOW).flags == ("PR-05",)
