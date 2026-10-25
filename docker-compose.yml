@@ -1,0 +1,25 @@
+services:
+  api:
+    build: ./backend
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: sqlite:////data/fd.db
+    ports:
+      - "8000:8000"
+    volumes:
+      - fd_data:/data
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: http://localhost:8000
+        VITE_USE_MOCKS: "false"
+    ports:
+      - "5173:80"
+    depends_on:
+      - api
+
+volumes:
+  fd_data:

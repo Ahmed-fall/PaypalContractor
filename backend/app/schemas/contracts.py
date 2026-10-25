@@ -207,13 +207,18 @@ class SimulatorPaymentRequest(BaseModel):
 class SimulatorPaymentResponse(BaseModel):
     paypal_order_id: str
     paypal_capture_id: str
+    capture_status: Literal["COMPLETED"] = "COMPLETED"
+    discrepancy_id: Optional[str] = None
     evaluation: DiscrepancyEvaluationResult
     leash: GuardResult | None = None
+    remediation_invoice: RemediationInvoiceRecord | None = None
     payroll_run_id: str | None = None
 
 
 class RemediationRequest(BaseModel):
-    confirm_send: bool = Field(default=False, description="Required to create and send the invoice.")
+    confirm_send: bool = Field(
+        default=False, description="Required to create and send the invoice."
+    )
     custom_note_override: Optional[str] = None
     idempotency_key: Optional[str] = None
 
@@ -232,6 +237,8 @@ class RemindResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str = "ok"
     paypal_sandbox_connected: bool
+    leash_enabled: bool = True
+    ai_provider: Optional[str] = None
 
 
 # --- Leash (Rev 2.1 §7.5 Interface 2; owner P5, approved by P4) ---

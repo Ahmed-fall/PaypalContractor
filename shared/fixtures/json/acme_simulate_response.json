@@ -1,6 +1,8 @@
 {
   "paypal_order_id": "5O190127TN364715T",
   "paypal_capture_id": "2GG279541U471931P",
+  "capture_status": "COMPLETED",
+  "discrepancy_id": "dsc_01J9Z99",
   "evaluation": {
     "discrepancy_type": "UNDERPAID_AND_LATE",
     "discrepancy_status": "PENDING_APPROVAL",
@@ -30,5 +32,8 @@
         "currency_code": "USD"
       }
     ]
-  }
+  },
+  "leash": null,
+  "remediation_invoice": null,
+  "payroll_run_id": null
 }

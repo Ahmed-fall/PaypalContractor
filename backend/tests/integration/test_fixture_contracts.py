@@ -42,7 +42,12 @@ def _load_ledger(name: str) -> c.LedgerResponse:
 def test_fixture_conforms_to_schema(filename: str, model: type) -> None:
     payload = json.loads((FIXTURES / filename).read_text(encoding="utf-8"))
     reencoded = json.loads(model.model_validate(payload).model_dump_json())
-    for key in ("expected_amount", "shortfall_amount", "penalty_amount", "total_remediation_amount"):
+    for key in (
+        "expected_amount",
+        "shortfall_amount",
+        "penalty_amount",
+        "total_remediation_amount",
+    ):
         if key in reencoded:
             assert isinstance(reencoded[key], str)
 
@@ -52,7 +57,10 @@ def test_ledger_row_math_invariant(name: str) -> None:
     for row in _load_ledger(name).rows:
         assert row.total_remediation_amount == row.shortfall_amount + row.penalty_amount
         assert not isinstance(row.expected_amount, float)
-        if row.captured_amount is not None and row.discrepancy_type != c.DiscrepancyType.CURRENCY_MISMATCH:
+        if (
+            row.captured_amount is not None
+            and row.discrepancy_type != c.DiscrepancyType.CURRENCY_MISMATCH
+        ):
             assert row.shortfall_amount == max(
                 Decimal("0.00"), row.expected_amount - row.captured_amount
             )
