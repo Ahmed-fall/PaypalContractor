@@ -44,10 +44,22 @@ class TimesheetError(Exception):
 
 @dataclass(frozen=True)
 class RawTable:
-    """Headers plus non-blank data rows, with cells exactly as read."""
+    """Headers plus non-blank data rows, with cells exactly as read.
+
+    ``row_numbers[i]`` is the physical row of ``rows[i]`` in the upload (the header
+    row is 1 and blank rows count). It defaults to 2, 3, ... for hand-built tables.
+    """
 
     headers: tuple[str, ...]
     rows: tuple[tuple[object, ...], ...]
+    row_numbers: tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.row_numbers:
+            object.__setattr__(self, "row_numbers", tuple(range(2, len(self.rows) + 2)))
+        elif len(self.row_numbers) != len(self.rows):
+            msg = "row_numbers must have one entry per row"
+            raise ValueError(msg)
 
 
 def escape_cell(text: str) -> str:
@@ -131,6 +143,7 @@ def _parse(raw: Generator[list[object], None, None]) -> RawTable:
     headers: tuple[str, ...] | None = None
     width = 0
     rows: list[tuple[object, ...]] = []
+    numbers: list[int] = []
     for number, row in enumerate(raw, start=1):
         if number > MAX_RAW_ROWS:
             raise _invalid("This timesheet has too many rows, including empty ones.")
@@ -161,9 +174,10 @@ def _parse(raw: Generator[list[object], None, None]) -> RawTable:
         cells = list(row[:width])
         cells.extend([None] * (width - len(cells)))
         rows.append(tuple(cells))
+        numbers.append(number)
     if headers is None:
         raise _invalid("This timesheet is empty.")
-    return RawTable(headers=headers, rows=tuple(rows))
+    return RawTable(headers=headers, rows=tuple(rows), row_numbers=tuple(numbers))
 
 
 def read_table(data: bytes, filename: str) -> RawTable:

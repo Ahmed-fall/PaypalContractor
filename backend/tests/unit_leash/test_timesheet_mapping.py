@@ -419,3 +419,32 @@ def test_milestone_length_boundary() -> None:
         parse_entries(_table(_row(ms="M" * 14 + "-12")), DEMO_MAPPING)
     assert ei.value.details is not None
     assert ei.value.details["rows"][0]["error"] == "milestone too long"
+
+
+# ------------------------------------------------------- physical row numbers
+
+
+def test_row_numbers_are_physical_and_count_blank_lines() -> None:
+    table = read_table(
+        b"Employee,Day,Hrs,Project\n\nOmar,2026-10-01,8,MS-1\n\n\nOmar,bad,8,MS-1\n",
+        "t.csv",
+    )
+    assert table.row_numbers == (3, 6)
+    with pytest.raises(TimesheetError) as ei:
+        parse_entries(table, DEMO_MAPPING)
+    assert ei.value.details is not None
+    assert ei.value.details["rows"] == [{"row": 6, "error": "unreadable date"}]
+
+
+def test_entries_carry_physical_row_numbers() -> None:
+    table = read_table(
+        b"Employee,Day,Hrs,Project\n\nOmar,2026-10-01,8,MS-1\n\nOmar,2026-10-02,8,MS-1\n",
+        "t.csv",
+    )
+    assert [e.row_number for e in parse_entries(table, DEMO_MAPPING)] == [3, 5]
+
+
+def test_hand_built_table_defaults_and_validates_row_numbers() -> None:
+    assert _table(_row(), _row()).row_numbers == (2, 3)
+    with pytest.raises(ValueError, match="row_numbers"):
+        RawTable(headers=HEADERS, rows=(_row(),), row_numbers=(2, 3))

@@ -140,8 +140,7 @@ def parse_entries(
 
     entries: list[TimesheetEntry] = []
     errors: list[dict[str, Any]] = []
-    for offset, row in enumerate(table.rows):
-        number = offset + 2  # the header is row 1
+    for number, row in zip(table.row_numbers, table.rows, strict=True):
         problems: list[str] = []
         work_date = date.min
         hours = Decimal(0)

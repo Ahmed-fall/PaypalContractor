@@ -35,9 +35,11 @@ T0 = datetime(2026, 9, 1, 9, 0, tzinfo=UTC)
 T1 = datetime(2026, 11, 4, 18, 40, tzinfo=UTC)
 
 
-def _omar(member_id: str = "tm_01", email: str = "omar@example.com") -> TeamMember:
+def _omar(
+    member_id: str = "tm_01", email: str = "omar@example.com", name: str = "Omar"
+) -> TeamMember:
     return create_member(
-        TeamMemberCreate(name="Omar", payout_email=email, hourly_rate=Decimal("25.00")),
+        TeamMemberCreate(name=name, payout_email=email, hourly_rate=Decimal("25.00")),
         T0,
         member_id=member_id,
     )
@@ -95,9 +97,9 @@ def test_conflicting_active_email_rejected() -> None:
     a = _omar("tm_a", "dup@example.com")
     roster.add(a)
     with pytest.raises(RosterConflict):
-        roster.add(_omar("tm_b", "dup@example.com"))
+        roster.add(_omar("tm_b", "dup@example.com", "Sara"))
 
-    b = _omar("tm_b", "other@example.com")
+    b = _omar("tm_b", "other@example.com", "Sara")
     roster.add(b)
     with pytest.raises(RosterConflict):
         roster.replace(
@@ -108,7 +110,9 @@ def test_conflicting_active_email_rejected() -> None:
 
     # inactive duplicates are allowed
     inactive = update_member(
-        _omar("tm_c", "dup@example.com"), TeamMemberUpdate(active=False), T1
+        _omar("tm_c", "dup@example.com", "Youssef"),
+        TeamMemberUpdate(active=False),
+        T1,
     )
     roster.add(inactive)
     assert roster.get("tm_c") == inactive
@@ -159,16 +163,16 @@ def test_find_by_name() -> None:
     assert roster.find_by_name("  omar   KHALED ") == omar
     assert roster.find_by_name("nobody") is None
 
-    # ambiguous: two active members share a name
-    roster.add(
-        create_member(
-            TeamMemberCreate(
-                name="sara", payout_email="s2@example.com", hourly_rate=Decimal(20)
-            ),
-            T0,
-            member_id="tm_3",
-        )
+    # ambiguous: two active members share a name (the roster refuses to build this,
+    # but rows loaded from storage could); the name must then count as unknown
+    twin = create_member(
+        TeamMemberCreate(
+            name="sara", payout_email="s2@example.com", hourly_rate=Decimal(20)
+        ),
+        T0,
+        member_id="tm_3",
     )
+    roster._members[twin.member_id] = twin
     assert roster.find_by_name("SARA") is None
 
     # inactive members never match
@@ -191,3 +195,53 @@ def test_to_out_matches_fixture() -> None:
         created_at=T0,
     )
     assert to_out(member) == expected
+
+
+def _named(member_id: str, name: str, email: str) -> TeamMember:
+    return create_member(
+        TeamMemberCreate(name=name, payout_email=email, hourly_rate=Decimal("25.00")),
+        T0,
+        member_id=member_id,
+    )
+
+
+def test_duplicate_active_name_is_rejected() -> None:
+    roster = InMemoryRoster()
+    roster.add(_named("tm_a", "Sara Ali", "a@example.com"))
+    with pytest.raises(RosterConflict, match="name"):
+        roster.add(_named("tm_b", "  sara   ALI ", "b@example.com"))
+
+    b = _named("tm_b", "Sara", "b@example.com")
+    roster.add(b)
+    with pytest.raises(RosterConflict, match="name"):
+        roster.replace(update_member(b, TeamMemberUpdate(name="sara ali"), T1))
+
+
+def test_inactive_member_does_not_block_its_name() -> None:
+    roster = InMemoryRoster()
+    a = _named("tm_a", "Sara", "a@example.com")
+    roster.add(a)
+    roster.replace(update_member(a, TeamMemberUpdate(active=False), T1))
+    roster.add(_named("tm_b", "sara", "b@example.com"))
+    roster.add(
+        update_member(
+            _named("tm_c", "SARA", "c@example.com"), TeamMemberUpdate(active=False), T1
+        )
+    )
+
+
+def test_reactivating_into_a_taken_email_or_name_is_rejected() -> None:
+    roster = InMemoryRoster()
+    a = _named("tm_a", "Sara", "a@example.com")
+    roster.add(a)
+    roster.replace(update_member(a, TeamMemberUpdate(active=False), T1))
+    roster.add(_named("tm_b", "Other", "a@example.com"))
+    with pytest.raises(RosterConflict, match="email"):
+        roster.replace(update_member(a, TeamMemberUpdate(active=True), T1))
+
+    roster.add(_named("tm_c", "Sara", "c@example.com"))
+    d = _named("tm_d", "Sara", "d@example.com")
+    inactive_d = update_member(d, TeamMemberUpdate(active=False), T1)
+    roster.add(inactive_d)
+    with pytest.raises(RosterConflict, match="name"):
+        roster.replace(update_member(inactive_d, TeamMemberUpdate(active=True), T1))

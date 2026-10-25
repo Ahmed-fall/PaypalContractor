@@ -30,7 +30,7 @@ class TeamMember:
 
 
 class RosterConflict(Exception):
-    """Another active member already uses this payout email."""
+    """Another active member already uses this payout email or name."""
 
 
 def normalise_name(name: str) -> str:
@@ -93,13 +93,15 @@ class InMemoryRoster:
     def _check_conflict(self, m: TeamMember) -> None:
         if not m.active:
             return
+        name_key = normalise_name(m.name)
         for other in self._members.values():
-            if (
-                other.member_id != m.member_id
-                and other.active
-                and other.payout_email == m.payout_email
-            ):
+            if other.member_id == m.member_id or not other.active:
+                continue
+            if other.payout_email == m.payout_email:
                 msg = "another active member already uses this payout email"
+                raise RosterConflict(msg)
+            if normalise_name(other.name) == name_key:
+                msg = "another active member already has this name"
                 raise RosterConflict(msg)
 
     def add(self, m: TeamMember) -> None:
