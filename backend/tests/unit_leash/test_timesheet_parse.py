@@ -273,7 +273,6 @@ def _xlsx_with_blank_rows(blank: int) -> bytes:
             body = src.read(info.filename)
             if info.filename == "xl/worksheets/sheet1.xml":
                 rows = "".join(f'<row r="{n}"/>' for n in range(2, blank + 2))
-                body = body.replace(b'<dimension ref="A1:B1" />', b"")
                 body = body.replace(b"</sheetData>", rows.encode() + b"</sheetData>")
             dst.writestr(info, body)
     return out.getvalue()
@@ -322,3 +321,23 @@ def test_xlsx_unpacked_size_is_capped(monkeypatch: pytest.MonkeyPatch) -> None:
         read_table(data, "a.xlsx")
     assert _code(exc) == "FILE_TOO_LARGE"
     assert str(exc.value) == "This spreadsheet is too large once unpacked."
+
+
+def test_xlsx_wrong_dimension_reads_all_rows() -> None:
+    import re
+    import zipfile
+
+    rows: list[list[object]] = [["Employee", "Day", "Hrs", "Project"]]
+    rows += [[f"E{i}", "2026-10-01", i, "MS-1"] for i in range(10)]
+    src = zipfile.ZipFile(BytesIO(_xlsx(rows)))
+    out = BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as dst:
+        for info in src.infolist():
+            body = src.read(info.filename)
+            if info.filename == "xl/worksheets/sheet1.xml":
+                body = re.sub(rb"<dimension[^>]*/>", b'<dimension ref="A1:D2"/>', body)
+                assert b'ref="A1:D2"' in body
+            dst.writestr(info, body)
+    table = read_table(out.getvalue(), "a.xlsx")
+    assert len(table.rows) == 10
+    assert table.rows[9][0] == "E9"

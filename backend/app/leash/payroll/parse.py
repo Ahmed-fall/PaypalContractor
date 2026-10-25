@@ -112,7 +112,10 @@ def _read_xlsx_rows(data: bytes) -> Generator[list[object], None, None]:
     try:
         if not wb.worksheets:
             return
-        for row in wb.worksheets[0].iter_rows(values_only=True):
+        ws = wb.worksheets[0]
+        # The declared <dimension> can be wrong and would silently drop rows.
+        ws.reset_dimensions()
+        for row in ws.iter_rows(values_only=True):
             yield list(row)
     finally:
         wb.close()
