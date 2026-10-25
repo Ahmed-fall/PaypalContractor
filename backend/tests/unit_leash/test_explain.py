@@ -57,16 +57,14 @@ def test_template_joins_multiple_ids_and_dedupes() -> None:
 
 def test_template_max_200_chars() -> None:
     facts = {"amount": "200.00", "client": "x" * 10_000}
-    text = reason(
-        LeashDecision.DENY, ["G-01", "G-02", "G-03", "G-04", "G-05", "DEFAULT"], facts
-    )
+    ids = ["G-02", "G-03", "G-04", "DEFAULT"]
+    text = reason(LeashDecision.ASK, ids, facts)
     assert len(text) <= 200
     assert text.endswith("…")
     assert not text[:-1].endswith(" ")
     # cut on a word boundary: the kept text is a prefix made of whole words
     full = " ".join(
-        reason(LeashDecision.DENY, [i], facts)
-        for i in ["G-01", "G-02", "G-03", "G-04", "G-05"]
+        reason(LeashDecision.ASK, [i], facts) for i in ["G-02", "G-03", "G-04"]
     )
     assert full.startswith(text[:-1])
     assert full[len(text) - 1] == " "
@@ -94,3 +92,30 @@ def test_template_has_no_numbers_not_in_facts(ids: list[str]) -> None:
     facts = {"amount": "200.00", "client": "Acme 42"}
     for digits in re.findall(r"\d+", reason(LeashDecision.ASK, ids, facts)):
         assert digits in str(facts["amount"])
+
+
+ALLOW_DEFAULT = "Your Leash policy allows this action to run on its own."
+DENY_DEFAULT = "Your Leash policy blocks this action."
+
+
+@pytest.mark.parametrize(
+    ("decision", "ids", "facts", "expected"),
+    [
+        (LeashDecision.ALLOW, ["G-06"], {"amount": "100.00"}, ALLOW_DEFAULT),
+        (LeashDecision.ALLOW, ["G-02"], {"amount": "400.00"}, ALLOW_DEFAULT),
+        (LeashDecision.DENY, ["MY-RULE"], {"amount": "100.00"}, DENY_DEFAULT),
+        (LeashDecision.ASK, ["G-01"], {"amount": "100.00"}, DEFAULT),
+        (LeashDecision.DENY, ["G-02"], {"amount": "100.00"}, DENY_DEFAULT),
+        (LeashDecision.ASK, ["G-05"], {"amount": "100.00"}, DEFAULT),
+        (LeashDecision.ALLOW, [], {}, ALLOW_DEFAULT),
+    ],
+)
+def test_template_never_contradicts_decision(
+    decision: LeashDecision,
+    ids: list[str],
+    facts: dict[str, Any],
+    expected: str,
+) -> None:
+    text = reason(decision, ids, facts)
+    assert text == expected
+    assert "above your auto-send limit" not in text
