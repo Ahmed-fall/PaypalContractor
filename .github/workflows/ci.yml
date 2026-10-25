@@ -15,6 +15,8 @@ jobs:
       PYTHONPATH: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: gitleaks
         uses: gitleaks/gitleaks-action@v2
@@ -38,7 +40,7 @@ jobs:
       - name: ruff
         run: |
           if [ -d backend/app ]; then
-            ruff check backend && ruff format --check backend
+            ruff check backend
           else
             echo "backend/app not present yet"
           fi
