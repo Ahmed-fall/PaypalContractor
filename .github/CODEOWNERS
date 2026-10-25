@@ -1,27 +1,28 @@
-# CODEOWNERS — The Financial Detective
-# CODEOWNERS is last-match-wins, so broad directories come first and the
-# canonical P4 overrides (contracts, fixtures, infra) come last.
+# CODEOWNERS — The Financial Detective (plan Rev 2.3, §8.2)
+# Last match wins: broad paths first, narrow overrides at the bottom.
 
-# Person 1 — Backend & PayPal
-backend/requirements.txt      @NourAtef112
-backend/app/main.py           @NourAtef112
-backend/app/config.py         @NourAtef112
-backend/app/db/               @NourAtef112
-backend/app/api/              @NourAtef112
-backend/app/services/         @NourAtef112
-backend/tests/unit_paypal/    @NourAtef112
+# P1 — Hassan · PayPal & Detective backend
+backend/requirements.txt      @hassan0tarek @Ahmed-fall
+backend/app/main.py           @hassan0tarek
+backend/app/config.py         @hassan0tarek
+backend/app/db/               @hassan0tarek
+backend/app/api/              @hassan0tarek
+backend/app/services/paypal/  @hassan0tarek
+backend/tests/unit_paypal/    @hassan0tarek
 
-# Person 2 — AI & Compliance
+# P2 — Yassin · AI & compliance (includes Leash AI)
 backend/app/ai/               @yassinalamelden
 backend/tests/unit_ai/        @yassinalamelden
 
-# Person 3 — Frontend & AG Grid
+# P3 — Moamen · Frontend & AG Grid
 frontend/                     @MoamenFouad
 
-# Person 4 — Integration, QA, Security & Submission (canonical contracts + infra)
+# P4 — Ahmed · canonical contracts, fixtures, infra, docs
 LICENSE                       @Ahmed-fall
 README.md                     @Ahmed-fall
+AGENTS.md                     @Ahmed-fall
 .env.example                  @Ahmed-fall
+.gitignore                    @Ahmed-fall
 docker-compose.yml            @Ahmed-fall
 render.yaml                   @Ahmed-fall
 .github/                      @Ahmed-fall
@@ -31,3 +32,16 @@ shared/                       @Ahmed-fall
 backend/app/schemas/          @Ahmed-fall
 backend/tests/integration/    @Ahmed-fall
 frontend/src/types/           @Ahmed-fall
+
+# Narrow overrides — keep these last.
+
+# P5 — Nour · Leash (payout plumbing reviewed by P1; UI reviewed by P3)
+backend/app/leash/                        @NourAtef112
+backend/app/api/leash.py                  @NourAtef112
+backend/app/services/paypal/payouts.py      @hassan0tarek @NourAtef112
+backend/app/services/paypal/payouts_sync.py @hassan0tarek @NourAtef112
+backend/tests/unit_leash/                 @NourAtef112
+shared/fixtures/leash/                    @NourAtef112
+scripts/payouts_l1.py                     @hassan0tarek @NourAtef112
+frontend/src/components/Leash/            @MoamenFouad @NourAtef112
+backend/app/ai/leash/                     @yassinalamelden @NourAtef112

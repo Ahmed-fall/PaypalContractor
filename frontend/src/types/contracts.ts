@@ -149,8 +149,11 @@ export interface SimulatorPaymentRequest {
 export interface SimulatorPaymentResponse {
   paypal_order_id: string;
   paypal_capture_id: string;
+  capture_status: "COMPLETED";
+  discrepancy_id: string | null;
   evaluation: DiscrepancyEvaluationResult;
   leash: GuardResult | null;
+  remediation_invoice: RemediationInvoiceRecord | null;
   payroll_run_id: string | null;
 }
 
@@ -174,6 +177,8 @@ export interface RemindResponse {
 export interface HealthResponse {
   status: string;
   paypal_sandbox_connected: boolean;
+  leash_enabled: boolean;
+  ai_provider: string | null;
 }
 
 // --- Leash (Rev 2.1 §7.5 Interface 2 + A.2.2) ---

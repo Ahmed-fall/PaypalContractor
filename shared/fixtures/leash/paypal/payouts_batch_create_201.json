@@ -1,0 +1,18 @@
+{
+  "batch_header": {
+    "payout_batch_id": "TNVNLATJ857QW",
+    "batch_status": "PENDING",
+    "sender_batch_header": {
+      "sender_batch_id": "fd-l1-01m5q3zwd55vwpd030yt50bg18",
+      "email_subject": "Leash L1 sandbox payout test"
+    }
+  },
+  "links": [
+    {
+      "href": "https://api.sandbox.paypal.com/v1/payments/payouts/TNVNLATJ857QW",
+      "rel": "self",
+      "method": "GET",
+      "encType": "application/json"
+    }
+  ]
+}

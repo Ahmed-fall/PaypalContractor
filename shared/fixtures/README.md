@@ -4,6 +4,8 @@ Owner: **Person 4**. Consumers: P1 (backend), P2 (AI), P3 (frontend).
 
 - `contracts/` — the 3 canonical sample contracts (`.md` source + generated `.pdf`).
 - `json/` — deterministic expected payloads matching `backend/app/schemas/contracts.py`.
+- `leash/` — Leash roster, policy and timesheet fixtures (owned by **P5**; P4 reviews
+  the schema they target, not the files).
 
 > Frozen names (plan §12, Table 55 / WP-4.1): `Acme_Standard`, `Globex_LateFee`,
 > `Initech_MultiMilestone`. Do not rename.

@@ -1,0 +1,17 @@
+# Runtime dependencies for fd-api (owner: P1; PRs reviewed by P4).
+fastapi==0.161.1
+uvicorn[standard]==0.54.0
+pydantic==2.14.1
+pydantic-settings==2.16.1
+email-validator==2.3.0
+python-multipart==0.0.32
+sqlalchemy==2.1.6
+alembic==1.20.1
+psycopg[binary]==3.3.6
+httpx==0.28.1
+python-ulid==4.0.1
+# AI engine (P2)
+pypdf==6.21.2
+google-genai==2.33.0
+# Leash timesheets (P5)
+openpyxl==3.1.5

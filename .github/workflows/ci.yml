@@ -1,0 +1,78 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install backend dependencies
+        run: |
+          if [ -f backend/requirements.txt ]; then
+            pip install -r backend/requirements.txt
+          fi
+          if [ -f backend/requirements-dev.txt ]; then
+            pip install -r backend/requirements-dev.txt
+          fi
+          pip install ruff mypy pytest httpx respx
+
+      - name: ruff
+        run: |
+          if [ -d backend/app ]; then
+            ruff check backend
+          else
+            echo "backend/app not present yet"
+          fi
+
+      - name: mypy
+        run: |
+          if [ -d backend/app ]; then
+            mypy backend/app
+          else
+            echo "backend/app not present yet"
+          fi
+
+      - name: pytest
+        run: |
+          for suite in unit_paypal unit_ai unit_leash integration; do
+            if [ -d "backend/tests/$suite" ]; then
+              pytest "backend/tests/$suite"
+            else
+              echo "backend/tests/$suite not present yet"
+            fi
+          done
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: TypeScript
+        working-directory: frontend
+        run: |
+          if [ -f package.json ]; then
+            npm ci
+            npx tsc --noEmit
+          else
+            echo "frontend/package.json not present yet"
+          fi
