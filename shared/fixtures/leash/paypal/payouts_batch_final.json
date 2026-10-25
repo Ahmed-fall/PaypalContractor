@@ -1,0 +1,96 @@
+{
+  "batch_header": {
+    "payout_batch_id": "TNVNLATJ857QW",
+    "batch_status": "SUCCESS",
+    "time_created": "2026-10-24T14:10:48Z",
+    "time_completed": "2026-10-24T14:11:20Z",
+    "time_closed": "2026-10-24T14:11:20Z",
+    "sender_batch_header": {
+      "sender_batch_id": "fd-l1-01m5q3zwd55vwpd030yt50bg18",
+      "email_subject": "Leash L1 sandbox payout test"
+    },
+    "funding_source": "BALANCE",
+    "amount": {
+      "currency": "USD",
+      "value": "2.00"
+    },
+    "fees": {
+      "currency": "USD",
+      "value": "0.50"
+    }
+  },
+  "items": [
+    {
+      "payout_item_id": "XC4GNWZU7XB5S",
+      "transaction_id": "7FA43913M5256181V",
+      "activity_id": "7D3573683M2829945",
+      "transaction_status": "SUCCESS",
+      "payout_item_fee": {
+        "currency": "USD",
+        "value": "0.25"
+      },
+      "payout_batch_id": "TNVNLATJ857QW",
+      "payout_item": {
+        "recipient_type": "EMAIL",
+        "amount": {
+          "currency": "USD",
+          "value": "1.00"
+        },
+        "note": "Leash L1 test item 1",
+        "receiver": "sb-member1@personal.example.com",
+        "sender_item_id": "prl_l1_01m5q3zwd55vwpd030yt50bg18_1",
+        "recipient_wallet": "PAYPAL",
+        "purpose": "GOODS"
+      },
+      "time_processed": "2026-10-24T14:11:12Z",
+      "links": [
+        {
+          "href": "https://api.sandbox.paypal.com/v1/payments/payouts-item/XC4GNWZU7XB5S",
+          "rel": "item",
+          "method": "GET",
+          "encType": "application/json"
+        }
+      ]
+    },
+    {
+      "payout_item_id": "KVV75AZAGY3HJ",
+      "transaction_id": "2FT66042SY968942W",
+      "activity_id": "9N632151S95474258",
+      "transaction_status": "SUCCESS",
+      "payout_item_fee": {
+        "currency": "USD",
+        "value": "0.25"
+      },
+      "payout_batch_id": "TNVNLATJ857QW",
+      "payout_item": {
+        "recipient_type": "EMAIL",
+        "amount": {
+          "currency": "USD",
+          "value": "1.00"
+        },
+        "note": "Leash L1 test item 2",
+        "receiver": "sb-member2@personal.example.com",
+        "sender_item_id": "prl_l1_01m5q3zwd55vwpd030yt50bg18_2",
+        "recipient_wallet": "PAYPAL",
+        "purpose": "GOODS"
+      },
+      "time_processed": "2026-10-24T14:11:12Z",
+      "links": [
+        {
+          "href": "https://api.sandbox.paypal.com/v1/payments/payouts-item/KVV75AZAGY3HJ",
+          "rel": "item",
+          "method": "GET",
+          "encType": "application/json"
+        }
+      ]
+    }
+  ],
+  "links": [
+    {
+      "href": "https://api.sandbox.paypal.com/v1/payments/payouts/TNVNLATJ857QW?page_size=1000&page=1",
+      "rel": "self",
+      "method": "GET",
+      "encType": "application/json"
+    }
+  ]
+}
