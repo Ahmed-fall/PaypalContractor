@@ -26,7 +26,13 @@ from ...schemas.contracts import (
     TimesheetField,
     TimesheetMappingConfirm,
 )
-from .parse import RawTable, TimesheetError, escape_cell, header_signature
+from .parse import (
+    RawTable,
+    TimesheetError,
+    escape_cell,
+    header_signature,
+    normalise_header,
+)
 
 Mapper = Callable[[list[str], list[list[str]]], Awaitable[ColumnMappingProposal]]
 
@@ -151,7 +157,7 @@ async def resolve_mapping(
         try:
             result = await asyncio.wait_for(mapper(headers, samples), timeout_s)
             proposal = _valid_proposal(result, headers)
-        except (Exception, TimeoutError):  # noqa: BLE001 - AI is advisory only
+        except Exception:  # noqa: BLE001 - AI is advisory only (incl. TimeoutError)
             proposal = None
     if proposal is None:
         proposal = guess_mapping(headers)
@@ -159,8 +165,12 @@ async def resolve_mapping(
 
 
 async def confirm_mapping(
-    store: MappingStore, signature: str, mapping: dict[str, str]
+    store: MappingStore,
+    signature: str,
+    mapping: dict[str, str],
+    headers: Sequence[str],
 ) -> dict[str, TimesheetField]:
+    """Validate and remember a mapping; every key must be one of `headers`."""
     try:
         confirmed = TimesheetMappingConfirm.model_validate({"mapping": mapping})
     except ValidationError as exc:
@@ -169,6 +179,11 @@ async def confirm_mapping(
             "Each column may be mapped to one field, and only to known fields.",
         ) from exc
     clean = dict(confirmed.mapping)
+    known = {normalise_header(h) for h in headers}
+    if any(normalise_header(key) not in known for key in clean):
+        raise TimesheetError(
+            "TIMESHEET_INVALID", "The column mapping does not match this timesheet."
+        )
     missing = sorted(REQUIRED_FIELDS - set(clean.values()))
     if missing:
         raise TimesheetError(

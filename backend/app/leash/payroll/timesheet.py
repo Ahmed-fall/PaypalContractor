@@ -17,7 +17,7 @@ from typing import Any
 from ...schemas.contracts import TimesheetField
 from ..roster import normalise_name
 from .mapping import REQUIRED_FIELDS
-from .parse import RawTable, TimesheetError, escape_cell
+from .parse import RawTable, TimesheetError, escape_cell, normalise_header
 
 MAX_ROW_ERRORS = 50
 _CENT = Decimal("0.01")
@@ -118,13 +118,15 @@ def parse_entries(
     table: RawTable, mapping: dict[str, TimesheetField]
 ) -> tuple[TimesheetEntry, ...]:
     """Typed entries for every row, or `TIMESHEET_INVALID` listing the bad rows."""
+    by_name = {normalise_header(h): i for i, h in enumerate(table.headers)}
     index: dict[str, int] = {}
     for header, field in mapping.items():
-        if header not in table.headers:
+        position = by_name.get(normalise_header(header))
+        if position is None:
             raise TimesheetError(
                 "TIMESHEET_INVALID", "The column mapping does not match this timesheet."
             )
-        index[field] = table.headers.index(header)
+        index[field] = position
     missing = sorted(REQUIRED_FIELDS - set(index))
     if missing:
         raise TimesheetError(

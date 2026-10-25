@@ -83,7 +83,7 @@ async def test_known_layout_makes_zero_mapper_calls() -> None:
     assert mapper.calls[0][0] == list(HEADERS)
     assert len(mapper.calls[0][1]) == 5
 
-    await confirm_mapping(store, first.signature, dict(DEMO_MAPPING))
+    await confirm_mapping(store, first.signature, dict(DEMO_MAPPING), HEADERS)
 
     second = await resolve_mapping(table, store, mapper)
     assert second.known is True
@@ -163,7 +163,9 @@ async def test_sample_rows_are_stringified_and_escaped() -> None:
 async def test_confirm_requires_all_required_fields() -> None:
     store = InMemoryMappingStore()
     with pytest.raises(TimesheetError) as ei:
-        await confirm_mapping(store, "sig", {"Employee": "member", "Hrs": "hours"})
+        await confirm_mapping(
+            store, "sig", {"Employee": "member", "Hrs": "hours"}, HEADERS
+        )
     assert ei.value.code == "TIMESHEET_INVALID"
     assert await store.get("sig") is None
 
@@ -173,7 +175,7 @@ async def test_confirm_rejects_duplicate_targets() -> None:
     store = InMemoryMappingStore()
     bad = {**DEMO_MAPPING, "Extra": "hours"}
     with pytest.raises(TimesheetError) as ei:
-        await confirm_mapping(store, "sig", bad)
+        await confirm_mapping(store, "sig", bad, (*HEADERS, "Extra"))
     assert ei.value.code == "TIMESHEET_INVALID"
     assert await store.get("sig") is None
 
@@ -182,11 +184,48 @@ async def test_confirm_rejects_duplicate_targets() -> None:
 async def test_confirm_rejects_unknown_field() -> None:
     with pytest.raises(TimesheetError):
         await confirm_mapping(
-            InMemoryMappingStore(), "sig", {**DEMO_MAPPING, "X": "salary"}
+            InMemoryMappingStore(),
+            "sig",
+            {**DEMO_MAPPING, "X": "salary"},
+            (*HEADERS, "X"),
         )
 
 
+@pytest.mark.asyncio
+async def test_confirm_rejects_key_that_is_not_a_header() -> None:
+    store = InMemoryMappingStore()
+    with pytest.raises(TimesheetError) as ei:
+        await confirm_mapping(store, "sig", {**DEMO_MAPPING, "Ghost": "rate"}, HEADERS)
+    assert ei.value.code == "TIMESHEET_INVALID"
+    assert await store.get("sig") is None
+
+
+@pytest.mark.asyncio
+async def test_confirm_matches_keys_by_normalised_name() -> None:
+    store = InMemoryMappingStore()
+    got = await confirm_mapping(
+        store, "sig", dict(DEMO_MAPPING), ("employee", "DAY", " hrs ", "Project")
+    )
+    assert got == DEMO_MAPPING
+
+
 # ---------------------------------------------------------------- entries
+
+
+def test_parse_entries_matches_headers_by_normalised_name() -> None:
+    table = RawTable(
+        headers=("employee", "DAY", "hrs", "Project"),
+        rows=(("Omar", "2026-10-01", "8", "MS-1"),),
+    )
+    (e,) = parse_entries(table, DEMO_MAPPING)
+    assert e.hours == Decimal("8.00")
+
+
+def test_duplicate_normalised_headers_are_rejected() -> None:
+    data = b"Employee,Day,Hrs,hrs,Project\nOmar,2026-10-01,8,9,MS-1\n"
+    with pytest.raises(TimesheetError) as ei:
+        read_table(data, "t.csv")
+    assert ei.value.code == "TIMESHEET_INVALID"
 
 
 def test_parse_entries_demo() -> None:

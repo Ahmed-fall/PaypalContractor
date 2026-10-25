@@ -57,9 +57,14 @@ def escape_cell(text: str) -> str:
     return text
 
 
+def normalise_header(header: str) -> str:
+    """Strip, collapse inner whitespace and casefold: the identity of a column."""
+    return " ".join(header.split()).casefold()
+
+
 def header_signature(headers: Sequence[str]) -> str:
     """sha256 over normalised headers (strip, collapse spaces, casefold)."""
-    norm = [" ".join(h.split()).casefold() for h in headers]
+    norm = [normalise_header(h) for h in headers]
     return hashlib.sha256("\x1f".join(norm).encode("utf-8")).hexdigest()
 
 
@@ -140,6 +145,8 @@ def _parse(raw: Generator[list[object], None, None]) -> RawTable:
                     "This timesheet needs a header row with a name for every column."
                 )
             headers = tuple(str(c).strip() for c in cells)
+            if len({normalise_header(h) for h in headers}) != len(headers):
+                raise _invalid("Two columns have the same header name.")
             width = len(headers)
             continue
         if len(rows) >= MAX_ROWS:
