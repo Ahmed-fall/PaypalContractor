@@ -46,6 +46,10 @@ def _money(value: object) -> Decimal | None:
     return None
 
 
+parse_money = _money
+"""Public name for the guard's money rule, shared with the explanation templates."""
+
+
 def _number(value: object) -> Decimal | None:
     """A finite int/float/Decimal as Decimal. Bools and strings are unknown."""
     if isinstance(value, bool) or not isinstance(value, int | float | Decimal):
