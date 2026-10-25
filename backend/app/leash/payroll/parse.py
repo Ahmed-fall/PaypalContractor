@@ -10,7 +10,8 @@ import csv
 import hashlib
 import io
 import zipfile
-from collections.abc import Iterable, Sequence
+from collections.abc import Generator, Iterable, Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from typing import Any
 
@@ -77,7 +78,7 @@ def _invalid(message: str) -> TimesheetError:
     return TimesheetError("TIMESHEET_INVALID", message)
 
 
-def _read_csv_rows(data: bytes) -> list[list[object]]:
+def _read_csv_rows(data: bytes) -> Generator[list[object], None, None]:
     try:
         text = data.decode("utf-8-sig")
     except UnicodeDecodeError:
@@ -93,25 +94,57 @@ def _read_csv_rows(data: bytes) -> list[list[object]]:
         if first.count(best) > first.count(","):
             delimiter = best
     reader = csv.reader(io.StringIO(text, newline=""), delimiter=delimiter)
-    return [[c if c != "" else None for c in row] for row in reader]
+    for row in reader:
+        yield [c if c != "" else None for c in row]
 
 
-def _read_xlsx_rows(data: bytes) -> list[list[object]]:
+def _read_xlsx_rows(data: bytes) -> Generator[list[object], None, None]:
+    wb = load_workbook(
+        io.BytesIO(data), read_only=True, data_only=False, keep_links=False
+    )
     try:
-        wb = load_workbook(
-            io.BytesIO(data), read_only=True, data_only=False, keep_links=False
-        )
-    except (zipfile.BadZipFile, KeyError, InvalidFileException, OSError) as exc:
-        raise _unsupported() from exc
-    try:
-        ws = wb.worksheets[0] if wb.worksheets else None
-        if ws is None:
-            return []
-        return [list(r) for r in ws.iter_rows(values_only=True)]
-    except (zipfile.BadZipFile, KeyError) as exc:
-        raise _unsupported() from exc
+        if not wb.worksheets:
+            return
+        for row in wb.worksheets[0].iter_rows(values_only=True):
+            yield list(row)
     finally:
         wb.close()
+
+
+def _parse(raw: Generator[list[object], None, None]) -> RawTable:
+    """Consume `raw` lazily, stopping as soon as the row cap is exceeded."""
+    headers: tuple[str, ...] | None = None
+    width = 0
+    rows: list[tuple[object, ...]] = []
+    for number, row in enumerate(raw, start=1):
+        if _is_blank(row):
+            continue
+        if headers is None:
+            cells = list(row)
+            while cells and (cells[-1] is None or not str(cells[-1]).strip()):
+                cells.pop()
+            if any(c is None or not str(c).strip() for c in cells):
+                raise _invalid(
+                    "This timesheet needs a header row with a name for every column."
+                )
+            headers = tuple(str(c).strip() for c in cells)
+            width = len(headers)
+            continue
+        if len(rows) >= MAX_ROWS:
+            raise _invalid("This timesheet has more than 500 rows.")
+        extra = row[width:]
+        if not _is_blank(extra):
+            raise TimesheetError(
+                "TIMESHEET_INVALID",
+                "A row has more cells than there are column headers.",
+                {"rows": [{"row": number, "error": "more cells than headers"}]},
+            )
+        cells = list(row[:width])
+        cells.extend([None] * (width - len(cells)))
+        rows.append(tuple(cells))
+    if headers is None:
+        raise _invalid("This timesheet is empty.")
+    return RawTable(headers=headers, rows=tuple(rows))
 
 
 def read_table(data: bytes, filename: str) -> RawTable:
@@ -129,28 +162,10 @@ def read_table(data: bytes, filename: str) -> RawTable:
     else:
         raise _unsupported()
 
-    # Skip leading blank rows; the first non-blank row is the header.
-    start = 0
-    while start < len(raw) and _is_blank(raw[start]):
-        start += 1
-    if start == len(raw):
-        raise _invalid("This timesheet is empty.")
-
-    header_cells = raw[start]
-    if any(c is None or not str(c).strip() for c in header_cells):
-        raise _invalid(
-            "This timesheet needs a header row with a name for every column."
-        )
-    headers = tuple(str(c).strip() for c in header_cells)
-    width = len(headers)
-
-    rows: list[tuple[object, ...]] = []
-    for row in raw[start + 1 :]:
-        if _is_blank(row):
-            continue
-        if len(rows) >= MAX_ROWS:
-            raise _invalid("This timesheet has more than 500 rows.")
-        cells = list(row[:width]) if len(row) > width else list(row)
-        cells.extend([None] * (width - len(cells)))
-        rows.append(tuple(cells))
-    return RawTable(headers=headers, rows=tuple(rows))
+    try:
+        with closing(raw):
+            return _parse(raw)
+    except csv.Error as exc:
+        raise _invalid("This timesheet could not be read as CSV.") from exc
+    except (zipfile.BadZipFile, KeyError, InvalidFileException, OSError) as exc:
+        raise _unsupported() from exc

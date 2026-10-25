@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Generator
 from datetime import date, datetime
 from io import BytesIO
 
@@ -193,3 +194,70 @@ def test_header_signature() -> None:
 
 def test_file_hash() -> None:
     assert file_hash(DEMO_CSV) == hashlib.sha256(DEMO_CSV).hexdigest()
+
+
+def _counting(monkeypatch: pytest.MonkeyPatch, name: str) -> list[int]:
+    from backend.app.leash.payroll import parse
+
+    original = getattr(parse, name)
+    seen = [0]
+
+    def wrapper(data: bytes) -> Generator[list[object], None, None]:
+        for row in original(data):
+            seen[0] += 1
+            yield row
+
+    monkeypatch.setattr(parse, name, wrapper)
+    return seen
+
+
+def test_xlsx_row_cap_stops_reading_early(monkeypatch: pytest.MonkeyPatch) -> None:
+    rows: list[list[object]] = [["Employee", "Hrs"]]
+    rows += [["Omar", 1] for _ in range(5000)]
+    seen = _counting(monkeypatch, "_read_xlsx_rows")
+    with pytest.raises(TimesheetError) as exc:
+        read_table(_xlsx(rows), "a.xlsx")
+    assert _code(exc) == "TIMESHEET_INVALID"
+    assert seen[0] <= 502
+
+
+def test_csv_row_cap_stops_reading_early(monkeypatch: pytest.MonkeyPatch) -> None:
+    text = "Employee,Hrs\n" + "Omar,1\n" * 5000
+    seen = _counting(monkeypatch, "_read_csv_rows")
+    with pytest.raises(TimesheetError) as exc:
+        read_table(text.encode(), "a.csv")
+    assert _code(exc) == "TIMESHEET_INVALID"
+    assert seen[0] <= 502
+
+
+def test_oversized_csv_field_is_invalid_not_500() -> None:
+    data = b"Employee,Hrs\n" + b"x" * 140_000 + b",1\n"
+    assert len(data) < MAX_BYTES
+    with pytest.raises(TimesheetError) as exc:
+        read_table(data, "a.csv")
+    assert _code(exc) == "TIMESHEET_INVALID"
+
+
+def test_trailing_blank_headers_are_trimmed() -> None:
+    csv_table = read_table(b"a,b,\n1,2,\n3,4,\n", "a.csv")
+    assert csv_table.headers == ("a", "b")
+    assert csv_table.rows == ((("1", "2")), ("3", "4"))
+    xl = read_table(_xlsx([["a", "b", None, "  "], ["1", 2, None, None]]), "a.xlsx")
+    assert xl.headers == ("a", "b")
+    assert xl.rows == (("1", 2),)
+
+
+def test_blank_header_in_the_middle_is_invalid() -> None:
+    with pytest.raises(TimesheetError) as exc:
+        read_table(b"a,,c\n1,2,3\n", "a.csv")
+    assert _code(exc) == "TIMESHEET_INVALID"
+
+
+def test_overflow_cells_nonblank_rejected_blank_dropped() -> None:
+    ok = read_table(b"a,b\n1,2,,\n3,4,  \n", "a.csv")
+    assert ok.rows == (("1", "2"), ("3", "4"))
+    with pytest.raises(TimesheetError) as exc:
+        read_table(b"a,b\n1,2\n3,4,oops\n", "a.csv")
+    assert _code(exc) == "TIMESHEET_INVALID"
+    assert exc.value.details is not None
+    assert [r["row"] for r in exc.value.details["rows"]] == [3]
