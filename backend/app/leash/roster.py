@@ -118,7 +118,10 @@ class InMemoryRoster:
     def active(self) -> tuple[TeamMember, ...]:
         return tuple(m for m in self._members.values() if m.active)
 
-    def find_by_name(self, raw_name: str) -> TeamMember | None:
-        key = normalise_name(raw_name)
+    def find_by_key(self, key: str) -> TeamMember | None:
+        """Active member whose normalised name equals ``key``; None if none or ambiguous."""
         matches = [m for m in self.active() if normalise_name(m.name) == key]
         return matches[0] if len(matches) == 1 else None
+
+    def find_by_name(self, raw_name: str) -> TeamMember | None:
+        return self.find_by_key(normalise_name(raw_name))

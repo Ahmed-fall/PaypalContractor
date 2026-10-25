@@ -124,6 +124,20 @@ def test_normalise_name() -> None:
     assert normalise_name("Stra\u00dfe") == "strasse"
 
 
+def test_find_by_key() -> None:
+    roster = InMemoryRoster()
+    omar = create_member(
+        TeamMemberCreate(
+            name="Omar Khaled", payout_email="o@example.com", hourly_rate=Decimal(20)
+        ),
+        T0,
+        member_id="tm_1",
+    )
+    roster.add(omar)
+    assert roster.find_by_key(normalise_name("  OMAR   khaled ")) == omar
+    assert roster.find_by_key("nobody") is None
+
+
 def test_find_by_name() -> None:
     roster = InMemoryRoster()
     omar = create_member(
