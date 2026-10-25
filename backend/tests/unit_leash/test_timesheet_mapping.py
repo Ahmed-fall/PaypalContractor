@@ -375,3 +375,47 @@ def test_name_matching_is_case_and_space_insensitive() -> None:
     a, b = parse_entries(_table(_row(name="omar"), _row(name=" Omar ")), DEMO_MAPPING)
     assert a.member_key == b.member_key == "omar"
     assert b.member_name == "Omar"
+
+
+# ------------------------------------------------- ASCII digits and length caps
+
+
+@pytest.mark.parametrize(
+    ("row", "error"),
+    [
+        (_row(ms="MS-٠١"), "unreadable milestone"),
+        (_row(hrs="٤"), "unreadable hours"),
+        (_row(day="٢٠٢٦-١١-٠٥"), "unreadable date"),
+    ],
+)
+def test_non_ascii_digits_are_row_errors(row: tuple[object, ...], error: str) -> None:
+    with pytest.raises(TimesheetError) as ei:
+        parse_entries(_table(row), DEMO_MAPPING)
+    assert ei.value.details is not None
+    assert ei.value.details["rows"] == [{"row": 2, "error": error}]
+
+
+def test_name_length_boundary() -> None:
+    (e,) = parse_entries(_table(_row(name="A" * 120)), DEMO_MAPPING)
+    assert len(e.member_name) == 120
+    with pytest.raises(TimesheetError) as ei:
+        parse_entries(_table(_row(name="A" * 121)), DEMO_MAPPING)
+    assert ei.value.details is not None
+    assert ei.value.details["rows"][0]["error"] == "name too long"
+
+
+def test_name_length_counts_the_escape_prefix() -> None:
+    with pytest.raises(TimesheetError) as ei:
+        parse_entries(_table(_row(name="=" + "A" * 119)), DEMO_MAPPING)
+    assert ei.value.details is not None
+    assert ei.value.details["rows"][0]["error"] == "name too long"
+
+
+def test_milestone_length_boundary() -> None:
+    ok = "M" * 13 + "-12"  # 16 characters
+    (e,) = parse_entries(_table(_row(ms=ok)), DEMO_MAPPING)
+    assert e.milestone_code == ok
+    with pytest.raises(TimesheetError) as ei:
+        parse_entries(_table(_row(ms="M" * 14 + "-12")), DEMO_MAPPING)
+    assert ei.value.details is not None
+    assert ei.value.details["rows"][0]["error"] == "milestone too long"

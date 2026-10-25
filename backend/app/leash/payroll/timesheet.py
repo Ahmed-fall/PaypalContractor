@@ -21,10 +21,13 @@ from .parse import RawTable, TimesheetError, escape_cell, normalise_header
 
 MAX_ROW_ERRORS = 50
 _CENT = Decimal("0.01")
-_NUMBER = re.compile(r"-?\d+(\.\d{1,2})?")
-_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
-_DAY_FIRST = re.compile(r"\d{2}/\d{2}/\d{4}")
-_MILESTONE = re.compile(r"[A-Z]+-\d+")
+MAX_NAME_LEN = 120  # team_members.name, A.3
+MAX_MILESTONE_LEN = 16  # milestone code column, A.3
+# ASCII only: str \d also matches other scripts' digits (e.g. Arabic-Indic).
+_NUMBER = re.compile(r"-?\d+(\.\d{1,2})?", re.ASCII)
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}", re.ASCII)
+_DAY_FIRST = re.compile(r"\d{2}/\d{2}/\d{4}", re.ASCII)
+_MILESTONE = re.compile(r"[A-Z]+-\d+", re.ASCII)
 
 
 @dataclass(frozen=True)
@@ -147,6 +150,8 @@ def parse_entries(
         raw_name = _text(row[index["member"]])
         if not raw_name:
             problems.append("missing name")
+        elif len(escape_cell(raw_name)) > MAX_NAME_LEN:
+            problems.append("name too long")
         try:
             work_date = _date(row[index["work_date"]])
         except _RowError as exc:
@@ -158,6 +163,8 @@ def parse_entries(
         code = _text(row[index["milestone_code"]]).upper()
         if not code:
             problems.append("missing milestone")
+        elif len(code) > MAX_MILESTONE_LEN:
+            problems.append("milestone too long")
         elif not _MILESTONE.fullmatch(code):
             problems.append("unreadable milestone")
         if "rate" in index:
