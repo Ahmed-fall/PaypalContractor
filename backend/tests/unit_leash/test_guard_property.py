@@ -129,7 +129,7 @@ def _oracle_allows(f: dict[str, Any]) -> bool:
 def _explainer(rng: random.Random) -> Any:
     behaviour = rng.choice(["raise", "timeout", "allow", "long", "valid"])
 
-    async def fn(*_: Any) -> str:
+    async def fn(*_: Any, **__: Any) -> str:
         if behaviour == "raise":
             raise RuntimeError("boom")
         if behaviour == "timeout":

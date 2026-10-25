@@ -26,7 +26,13 @@ from backend.app.leash.service import (
     LeashService,
     StaticPolicyProvider,
 )
-from backend.app.schemas.contracts import GuardAction, GuardResult, LeashDecision
+from backend.app.schemas.contracts import (
+    GuardAction,
+    GuardResult,
+    LeashDecision,
+    LeashPolicy,
+    LeashRule,
+)
 
 INVOICE = GuardAction.SEND_REMEDIATION_INVOICE
 
@@ -139,7 +145,7 @@ def test_no_update_or_delete_of_decisions_in_code() -> None:
 
 @pytest.mark.asyncio
 async def test_explainer_used_when_valid() -> None:
-    async def ok(*_: Any) -> str:
+    async def ok(*_: Any, **__: Any) -> str:
         return "  Fine. "
 
     service, _ = make(ok)
@@ -151,7 +157,9 @@ async def test_explainer_used_when_valid() -> None:
 async def test_explainer_receives_decision_inputs() -> None:
     seen: list[Any] = []
 
-    async def spy(action: Any, decision: Any, ids: Any, facts: Any) -> str:
+    async def spy(
+        action: Any, decision: Any, ids: Any, facts: Any, *, use_llm: bool
+    ) -> str:
         seen.append((action, decision, ids, facts))
         return "ok"
 
@@ -162,7 +170,7 @@ async def test_explainer_receives_decision_inputs() -> None:
 
 @pytest.mark.asyncio
 async def test_explainer_timeout_uses_template_quickly() -> None:
-    async def slow(*_: Any) -> str:
+    async def slow(*_: Any, **__: Any) -> str:
         await asyncio.sleep(10)
         return "late"
 
@@ -175,27 +183,27 @@ async def test_explainer_timeout_uses_template_quickly() -> None:
     )
 
 
-async def _raises(*_: Any) -> str:
+async def _raises(*_: Any, **__: Any) -> str:
     raise RuntimeError("boom")
 
 
-async def _empty(*_: Any) -> str:
+async def _empty(*_: Any, **__: Any) -> str:
     return ""
 
 
-async def _blank(*_: Any) -> str:
+async def _blank(*_: Any, **__: Any) -> str:
     return "   "
 
 
-async def _long(*_: Any) -> str:
+async def _long(*_: Any, **__: Any) -> str:
     return "x" * 201
 
 
-async def _none(*_: Any) -> Any:
+async def _none(*_: Any, **__: Any) -> Any:
     return None
 
 
-async def _int(*_: Any) -> Any:
+async def _int(*_: Any, **__: Any) -> Any:
     return 123
 
 
@@ -212,7 +220,7 @@ async def test_explainer_errors_use_template(bad: Any) -> None:
 
 @pytest.mark.asyncio
 async def test_explainer_cannot_change_decision() -> None:
-    async def liar(*_: Any) -> str:
+    async def liar(*_: Any, **__: Any) -> str:
         return "APPROVED - ALLOW"
 
     service, _ = make(liar)
@@ -265,7 +273,7 @@ def test_load_explainer_absent(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_load_explainer_present(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fn(*_: Any) -> str:
+    async def fn(*_: Any, **__: Any) -> str:
         return "x"
 
     monkeypatch.setattr(importlib.util, "find_spec", lambda *_a, **_k: object())
@@ -301,7 +309,7 @@ def test_load_explainer_not_callable_or_import_error(
 async def test_record_uses_facts_as_they_were_at_call_time() -> None:
     caller_facts: dict[str, Any] = {**DEMO, "client_tags": ["a"]}
 
-    async def mutator(*_: Any) -> str:
+    async def mutator(*_: Any, **__: Any) -> str:
         await asyncio.sleep(0.01)
         caller_facts["amount"] = Decimal("999.00")
         caller_facts["client_tags"].append("never_auto_contact")
@@ -321,7 +329,7 @@ async def test_explainer_gets_the_snapshot_not_the_callers_dict() -> None:
     caller_facts: dict[str, Any] = dict(DEMO)
     seen: list[Any] = []
 
-    async def spy(_a: Any, _d: Any, _i: Any, facts: Any) -> str:
+    async def spy(_a: Any, _d: Any, _i: Any, facts: Any, *, use_llm: bool) -> str:
         seen.append(facts)
         return "ok"
 
@@ -335,10 +343,10 @@ async def test_explainer_gets_the_snapshot_not_the_callers_dict() -> None:
 async def test_explainer_reason_boundary_200_chars() -> None:
     exact = "a" * 200
 
-    async def padded(*_: Any) -> str:
+    async def padded(*_: Any, **__: Any) -> str:
         return f"  \n{exact}\t "
 
-    async def too_long(*_: Any) -> str:
+    async def too_long(*_: Any, **__: Any) -> str:
         return f" {'a' * 201} "
 
     service, _ = make(padded)
@@ -348,3 +356,88 @@ async def test_explainer_reason_boundary_200_chars() -> None:
     assert result.reason == template_reason(
         INVOICE, LeashDecision.ALLOW, ["G-01"], DEMO
     )
+
+
+PAY = GuardAction.PAY_TEAM_MEMBER
+BATCH = GuardAction.SEND_PAYROLL_BATCH
+# Payroll has no default rules yet, so DENY needs a small custom payroll rule.
+PAYROLL_DENY_POLICY = LeashPolicy(
+    version=2,
+    rules=[
+        LeashRule(
+            id="PR-07",
+            applies_to=action,
+            when={"amount_gt": "0.00"},
+            outcome=LeashDecision.DENY,
+            source_text="t",
+        )
+        for action in (PAY, BATCH)
+    ],
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action", "facts", "policy", "decision", "use_llm"),
+    [
+        (INVOICE, DEMO, None, LeashDecision.ALLOW, False),
+        (INVOICE, ASK_CASE, None, LeashDecision.ASK, False),
+        (
+            INVOICE,
+            {**DEMO, "line_items_match_decimal_total": False},
+            None,
+            LeashDecision.DENY,
+            False,
+        ),
+        (PAY, {"amount": "450.00"}, None, LeashDecision.ASK, True),
+        (PAY, {"amount": "450.00"}, PAYROLL_DENY_POLICY, LeashDecision.DENY, True),
+        (BATCH, {"amount": "900.00"}, None, LeashDecision.ASK, True),
+        (BATCH, {"amount": "900.00"}, PAYROLL_DENY_POLICY, LeashDecision.DENY, True),
+    ],
+)
+async def test_use_llm_flag_by_path(
+    action: GuardAction,
+    facts: dict[str, Any],
+    policy: LeashPolicy | None,
+    decision: LeashDecision,
+    use_llm: bool,
+) -> None:
+    seen: list[bool] = []
+
+    async def recorder(*_: Any, use_llm: bool) -> str:
+        seen.append(use_llm)
+        return "ok"
+
+    log = InMemoryDecisionLog()
+    service = LeashService(
+        StaticPolicyProvider(policy or default_policy()), log, explainer=recorder
+    )
+    result = await service.decide(action, dict(facts), "sub_1")
+    assert result.decision == decision
+    assert seen == [use_llm]
+    assert len(log.records) == 1
+
+
+@pytest.mark.asyncio
+async def test_use_llm_false_for_payroll_allow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The guard is fail-closed and never allows payroll today (see
+    # ALLOW_ENABLED_ACTIONS), so stub the rules to reach the ALLOW branch.
+    monkeypatch.setattr(
+        svc, "evaluate_rules", lambda *_a: (LeashDecision.ALLOW, ["P-1"])
+    )
+    seen: list[bool] = []
+
+    async def recorder(*_: Any, use_llm: bool) -> str:
+        seen.append(use_llm)
+        return "ok"
+
+    service, _ = make(recorder)
+    result = await service.decide(PAY, {"amount": "450.00"}, "prl_1")
+    assert result.decision == LeashDecision.ALLOW
+    assert seen == [False]
+
+
+def test_payroll_actions() -> None:
+    assert svc.PAYROLL_ACTIONS == frozenset({PAY, BATCH})
