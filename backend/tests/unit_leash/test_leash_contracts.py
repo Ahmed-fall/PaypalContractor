@@ -255,3 +255,25 @@ def test_deny_ledger_row_can_be_blocked() -> None:
     row = {**rows[0], "discrepancy_status": "BLOCKED", "leash_decision": "DENY"}
     lr = c.LedgerRow.model_validate(row)
     assert lr.discrepancy_status == c.DiscrepancyStatus.BLOCKED
+
+
+_MARGIN_ROW = {
+    "milestone_id": "ms_05",
+    "milestone_code": "MS-03",
+    "cash_in": "0.00",
+    "invoiced_open": "0.00",
+    "paid_to_team": "0.00",
+    "pending_to_team": "0.00",
+    "margin": "0.00",
+    "margin_pct": "0.00",
+}
+
+
+def test_margin_row_without_run_defaults_to_none_status() -> None:
+    assert c.MarginRow.model_validate(_MARGIN_ROW).payroll_status == "NONE"
+
+
+def test_margin_row_rejects_null_and_unknown_status() -> None:
+    for bad in (None, "DONE"):
+        with pytest.raises(ValidationError):
+            c.MarginRow.model_validate({**_MARGIN_ROW, "payroll_status": bad})

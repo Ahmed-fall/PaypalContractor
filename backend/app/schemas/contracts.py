@@ -260,6 +260,8 @@ PayrollMode = Literal["MILESTONE", "MONTHLY"]
 PayrollRunStatus = Literal[
     "PREPARED", "CHECKED", "AWAITING_APPROVAL", "SENT", "PAID", "PARTIAL", "FAILED"
 ]
+# REQ-LSH-14: a margin row for an active milestone with no payroll run yet.
+MarginPayrollStatus = PayrollRunStatus | Literal["NONE"]
 PayoutStatus = Literal["PENDING", "SUCCESS", "UNCLAIMED", "FAILED"]
 OwnerAction = Literal["APPROVED", "EXCLUDED"]
 # "rate" goes beyond the plan comment: A.3 rate_in_file feeds PR-04.
@@ -544,7 +546,7 @@ class MarginRow(BaseModel):
     pending_to_team: Decimal
     margin: Decimal
     margin_pct: Decimal
-    payroll_status: PayrollRunStatus | None = None
+    payroll_status: MarginPayrollStatus = "NONE"
 
 
 class MarginSummary(BaseModel):

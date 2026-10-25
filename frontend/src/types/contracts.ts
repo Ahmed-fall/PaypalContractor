@@ -201,6 +201,9 @@ export type PayrollRunStatus =
   | "PARTIAL"
   | "FAILED";
 
+// REQ-LSH-14: a margin row for an active milestone with no payroll run yet.
+export type MarginPayrollStatus = PayrollRunStatus | "NONE";
+
 export type PayoutStatus = "PENDING" | "SUCCESS" | "UNCLAIMED" | "FAILED";
 
 export type OwnerAction = "APPROVED" | "EXCLUDED";
@@ -399,7 +402,7 @@ export interface MarginRow {
   pending_to_team: string;
   margin: string;
   margin_pct: string;
-  payroll_status: PayrollRunStatus | null;
+  payroll_status: MarginPayrollStatus;
 }
 
 export interface MarginSummary {

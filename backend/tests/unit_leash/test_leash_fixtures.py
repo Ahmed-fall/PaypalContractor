@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any
@@ -46,6 +47,7 @@ MONEY_KEYS = frozenset(
     }
 )
 CENT = Decimal("0.01")
+_MONEY_2DP = re.compile(r"[0-9]+\.[0-9]{2}")
 
 
 def _load(name: str) -> Any:
@@ -66,6 +68,8 @@ def _money_values(node: Any) -> list[tuple[str, Any]]:
 
 
 def _pct(part: Decimal, whole: Decimal) -> Decimal:
+    if whole == 0:
+        return Decimal("0.00")
     return (part / whole * 100).quantize(CENT, ROUND_HALF_UP)
 
 
@@ -174,6 +178,20 @@ def test_margin_math() -> None:
         (r.paid_to_team for r in margin.rows), Decimal(0)
     )
     assert margin.summary.margin == sum((r.margin for r in margin.rows), Decimal(0))
+
+
+def test_margin_lists_milestone_without_run() -> None:
+    raw = _load("ledger_margin.json")
+    margin = c.MarginResponse.model_validate(raw)
+    assert [r.payroll_status for r in margin.rows] == ["PAID", "NONE"]
+    raw_row = raw["rows"][1]
+    assert raw_row["payroll_status"] == "NONE"
+    for key in ("cash_in", "paid_to_team", "pending_to_team", "margin", "margin_pct"):
+        assert _MONEY_2DP.fullmatch(raw_row[key]), key
+    row = margin.rows[1]
+    assert (row.milestone_id, row.milestone_code) == ("ms_05", "MS-03")
+    assert row.paid_to_team == row.pending_to_team == 0
+    assert row.margin == row.cash_in
 
 
 def test_active_policy_matches_compiled_draft() -> None:

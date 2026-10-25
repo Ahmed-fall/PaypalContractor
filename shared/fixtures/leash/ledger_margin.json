@@ -10,6 +10,17 @@
       "margin": "430.00",
       "margin_pct": "50.59",
       "payroll_status": "PAID"
+    },
+    {
+      "milestone_id": "ms_05",
+      "milestone_code": "MS-03",
+      "cash_in": "0.00",
+      "invoiced_open": "0.00",
+      "paid_to_team": "0.00",
+      "pending_to_team": "0.00",
+      "margin": "0.00",
+      "margin_pct": "0.00",
+      "payroll_status": "NONE"
     }
   ],
   "summary": {
