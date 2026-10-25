@@ -261,3 +261,64 @@ def test_overflow_cells_nonblank_rejected_blank_dropped() -> None:
     assert _code(exc) == "TIMESHEET_INVALID"
     assert exc.value.details is not None
     assert [r["row"] for r in exc.value.details["rows"]] == [3]
+
+
+def _xlsx_with_blank_rows(blank: int) -> bytes:
+    import zipfile
+
+    src = zipfile.ZipFile(BytesIO(_xlsx([["Employee", "Hrs"]])))
+    out = BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as dst:
+        for info in src.infolist():
+            body = src.read(info.filename)
+            if info.filename == "xl/worksheets/sheet1.xml":
+                rows = "".join(f'<row r="{n}"/>' for n in range(2, blank + 2))
+                body = body.replace(b'<dimension ref="A1:B1" />', b"")
+                body = body.replace(b"</sheetData>", rows.encode() + b"</sheetData>")
+            dst.writestr(info, body)
+    return out.getvalue()
+
+
+def test_xlsx_blank_rows_are_capped(monkeypatch: pytest.MonkeyPatch) -> None:
+    from backend.app.leash.payroll.parse import MAX_RAW_ROWS
+
+    assert MAX_RAW_ROWS == 5000
+    data = _xlsx_with_blank_rows(20_000)
+    seen = _counting(monkeypatch, "_read_xlsx_rows")
+    with pytest.raises(TimesheetError) as exc:
+        read_table(data, "a.xlsx")
+    assert _code(exc) == "TIMESHEET_INVALID"
+    assert str(exc.value) == "This timesheet has too many rows, including empty ones."
+    assert seen[0] <= MAX_RAW_ROWS + 1
+
+
+def test_csv_blank_lines_are_capped(monkeypatch: pytest.MonkeyPatch) -> None:
+    from backend.app.leash.payroll.parse import MAX_RAW_ROWS
+
+    data = b"Employee,Hrs\n" + b",\n" * 6000
+    seen = _counting(monkeypatch, "_read_csv_rows")
+    with pytest.raises(TimesheetError) as exc:
+        read_table(data, "a.csv")
+    assert _code(exc) == "TIMESHEET_INVALID"
+    assert seen[0] <= MAX_RAW_ROWS + 1
+
+
+def test_xlsx_unpacked_size_is_capped(monkeypatch: pytest.MonkeyPatch) -> None:
+    import zipfile
+
+    from backend.app.leash.payroll import parse
+
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("xl/worksheets/sheet1.xml", b"<row/>" * (21 * 1024 * 1024 // 6))
+    data = buf.getvalue()
+    assert len(data) < MAX_BYTES
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise AssertionError("load_workbook must not be called")
+
+    monkeypatch.setattr(parse, "load_workbook", boom)
+    with pytest.raises(TimesheetError) as exc:
+        read_table(data, "a.xlsx")
+    assert _code(exc) == "FILE_TOO_LARGE"
+    assert str(exc.value) == "This spreadsheet is too large once unpacked."

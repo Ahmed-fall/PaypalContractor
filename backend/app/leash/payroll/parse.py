@@ -22,6 +22,8 @@ from openpyxl.utils.exceptions import (  # type: ignore[import-untyped]
 
 MAX_BYTES = 2 * 1024 * 1024
 MAX_ROWS = 500
+MAX_RAW_ROWS = 5000
+MAX_UNPACKED_BYTES = 20 * 1024 * 1024
 
 _XLSX_MAGIC = b"PK\x03\x04"
 _FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
@@ -99,6 +101,11 @@ def _read_csv_rows(data: bytes) -> Generator[list[object], None, None]:
 
 
 def _read_xlsx_rows(data: bytes) -> Generator[list[object], None, None]:
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        if sum(i.file_size for i in zf.infolist()) > MAX_UNPACKED_BYTES:
+            raise TimesheetError(
+                "FILE_TOO_LARGE", "This spreadsheet is too large once unpacked."
+            )
     wb = load_workbook(
         io.BytesIO(data), read_only=True, data_only=False, keep_links=False
     )
@@ -117,6 +124,8 @@ def _parse(raw: Generator[list[object], None, None]) -> RawTable:
     width = 0
     rows: list[tuple[object, ...]] = []
     for number, row in enumerate(raw, start=1):
+        if number > MAX_RAW_ROWS:
+            raise _invalid("This timesheet has too many rows, including empty ones.")
         if _is_blank(row):
             continue
         if headers is None:
