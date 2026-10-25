@@ -29,7 +29,9 @@ Explainer = Callable[
     [GuardAction, LeashDecision, list[str], dict[str, Any]], Awaitable[str]
 ]
 
-SUBJECT_TYPES: dict[GuardAction, str] = {
+SubjectType = Literal["discrepancy", "payroll_line", "payroll_run"]
+
+SUBJECT_TYPES: dict[GuardAction, SubjectType] = {
     GuardAction.SEND_REMEDIATION_INVOICE: "discrepancy",
     GuardAction.PAY_TEAM_MEMBER: "payroll_line",
     GuardAction.SEND_PAYROLL_BATCH: "payroll_run",
@@ -42,7 +44,7 @@ class DecisionRecord:
     decision_id: str
     policy_version: int
     action_type: GuardAction
-    subject_type: Literal["discrepancy", "payroll_line", "payroll_run"]
+    subject_type: SubjectType
     subject_id: str
     decision: LeashDecision
     rule_ids: tuple[str, ...]
@@ -122,14 +124,14 @@ class LeashService:
         action: GuardAction,
         decision: LeashDecision,
         rule_ids: list[str],
-        facts: dict[str, Any],
+        snapshot: dict[str, Any],
     ) -> str:
-        fallback = template_reason(action, decision, rule_ids, facts)
+        fallback = template_reason(action, decision, rule_ids, snapshot)
         if self._explainer is None:
             return fallback
         try:
             text = await asyncio.wait_for(
-                self._explainer(action, decision, list(rule_ids), _json_safe(facts)),
+                self._explainer(action, decision, list(rule_ids), _json_safe(snapshot)),
                 self._timeout,
             )
         except Exception:  # noqa: BLE001 - any explainer failure uses the template
@@ -141,20 +143,23 @@ class LeashService:
     async def decide(
         self, action: GuardAction, facts: dict[str, Any], subject_id: str
     ) -> GuardResult:
+        # Snapshot first: nothing awaited below may change what gets recorded.
+        snapshot = _json_safe(facts)
+        amount = parse_money(facts.get("amount"))
         policy = await self._policies.active_policy()
         decision, rule_ids = evaluate_rules(policy, action, facts)
-        reason = await self._explain(action, decision, rule_ids, facts)
+        reason = await self._explain(action, decision, rule_ids, snapshot)
         decision_id = "lsd_" + str(ULID()).lower()
         record = DecisionRecord(
             decision_id=decision_id,
             policy_version=policy.version,
             action_type=action,
-            subject_type=SUBJECT_TYPES[action],  # type: ignore[arg-type]
+            subject_type=SUBJECT_TYPES[action],
             subject_id=subject_id,
             decision=decision,
             rule_ids=tuple(rule_ids),
-            facts=_json_safe(facts),
-            amount=parse_money(facts.get("amount")),
+            facts=snapshot,
+            amount=amount,
             reason=reason,
             actor="leash",
             created_at=self._clock(),

@@ -295,3 +295,56 @@ def test_load_explainer_not_callable_or_import_error(
     assert svc._load_explainer() is None
     monkeypatch.setattr(importlib.util, "find_spec", boom)
     assert svc._load_explainer() is None
+
+
+@pytest.mark.asyncio
+async def test_record_uses_facts_as_they_were_at_call_time() -> None:
+    caller_facts: dict[str, Any] = {**DEMO, "client_tags": ["a"]}
+
+    async def mutator(*_: Any) -> str:
+        await asyncio.sleep(0.01)
+        caller_facts["amount"] = Decimal("999.00")
+        caller_facts["client_tags"].append("never_auto_contact")
+        return "ok"
+
+    service, log = make(mutator, timeout=1.0)
+    await service.decide(INVOICE, caller_facts, "dsc_1")
+    rec = log.records[0]
+    assert caller_facts["amount"] == Decimal("999.00")  # the mutation did happen
+    assert rec.facts["amount"] == "200.00"
+    assert rec.facts["client_tags"] == ["a"]
+    assert rec.amount == Decimal("200.00")
+
+
+@pytest.mark.asyncio
+async def test_explainer_gets_the_snapshot_not_the_callers_dict() -> None:
+    caller_facts: dict[str, Any] = dict(DEMO)
+    seen: list[Any] = []
+
+    async def spy(_a: Any, _d: Any, _i: Any, facts: Any) -> str:
+        seen.append(facts)
+        return "ok"
+
+    service, log = make(spy)
+    await service.decide(INVOICE, caller_facts, "dsc_1")
+    assert seen[0] is not caller_facts
+    assert seen[0] == log.records[0].facts
+
+
+@pytest.mark.asyncio
+async def test_explainer_reason_boundary_200_chars() -> None:
+    exact = "a" * 200
+
+    async def padded(*_: Any) -> str:
+        return f"  \n{exact}\t "
+
+    async def too_long(*_: Any) -> str:
+        return f" {'a' * 201} "
+
+    service, _ = make(padded)
+    assert (await service.decide(INVOICE, dict(DEMO), "dsc_1")).reason == exact
+    service, _ = make(too_long)
+    result = await service.decide(INVOICE, dict(DEMO), "dsc_1")
+    assert result.reason == template_reason(
+        INVOICE, LeashDecision.ALLOW, ["G-01"], DEMO
+    )
