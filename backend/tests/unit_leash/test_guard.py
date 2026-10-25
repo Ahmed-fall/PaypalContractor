@@ -462,11 +462,11 @@ def test_definite_false_beats_unknown_in_ask_rule() -> None:
 
 def test_rules_for_other_actions_are_ignored() -> None:
     pol = policy_of(
-        rule("P-1", {"amount_lte": "250.00"}, ALLOW, GuardAction.PAY_TEAM_MEMBER),
+        rule("P-1", {"amount_lte": "250.00"}, ASK, GuardAction.PAY_TEAM_MEMBER),
         rule("A-1", {"amount_lte": "100.00"}, ALLOW),
     )
     assert evaluate_rules(pol, INVOICE, facts()) == (ASK, DEFAULT)
-    assert evaluate_rules(pol, GuardAction.PAY_TEAM_MEMBER, facts()) == (ALLOW, ["P-1"])
+    assert evaluate_rules(pol, GuardAction.PAY_TEAM_MEMBER, facts()) == (ASK, ["P-1"])
 
 
 def test_policy_g05_is_not_duplicated() -> None:
@@ -544,3 +544,30 @@ def test_allow_rule_with_empty_when_never_matches() -> None:
         pol, INVOICE, facts(amount="99999.00", extraction_confidence=0.1)
     )
     assert result == (ASK, DEFAULT)
+
+
+@pytest.mark.parametrize("tags", [["Never_Auto_Contact"], [" never_auto_contact "]])
+def test_client_tag_is_case_and_space_insensitive(tags: list[str]) -> None:
+    assert evaluate_rules(default_policy(), INVOICE, facts(client_tags=tags)) == (
+        ASK,
+        ["G-03"],
+    )
+
+
+def test_client_tag_with_non_string_entry_fails_closed() -> None:
+    decision, _ = evaluate_rules(
+        default_policy(), INVOICE, facts(client_tags=["vip", 5])
+    )
+    assert decision != ALLOW
+
+
+def test_payroll_actions_never_match_allow_rules() -> None:
+    for action in (GuardAction.PAY_TEAM_MEMBER, GuardAction.SEND_PAYROLL_BATCH):
+        policy = policy_of(rule("P-1", {"amount_lte": "5000.00"}, ALLOW, action))
+        assert evaluate_rules(policy, action, facts(amount="100.00")) == (ASK, DEFAULT)
+
+
+def test_reserved_default_id_in_policy_is_ignored() -> None:
+    policy = default_policy()
+    policy.rules.append(rule(DEFAULT_RULE_ID, {"amount_gt": "0.00"}, ASK))
+    assert evaluate_rules(policy, INVOICE, facts()) == (ALLOW, G01)

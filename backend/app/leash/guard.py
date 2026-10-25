@@ -31,6 +31,11 @@ KNOWN_CONDITIONS: frozenset[str] = frozenset(
     }
 )
 
+# Payroll has no facts vocabulary until WP-5.4, so an ALLOW rule can never match there.
+ALLOW_ENABLED_ACTIONS: frozenset[GuardAction] = frozenset(
+    {GuardAction.SEND_REMEDIATION_INVOICE}
+)
+
 _MONEY_2DP = re.compile(r"[0-9]+\.[0-9]{2}")
 _RANK = {LeashDecision.ALLOW: 0, LeashDecision.ASK: 1, LeashDecision.DENY: 2}
 
@@ -95,7 +100,8 @@ def _check_tag(rule_value: object, facts: dict[str, Any]) -> bool | None:
         or not all(isinstance(tag, str) for tag in tags)
     ):
         return None
-    return rule_value in tags
+    wanted = rule_value.strip().casefold()
+    return wanted in {tag.strip().casefold() for tag in tags}
 
 
 def _check_recent_invoice(rule_value: object, facts: dict[str, Any]) -> bool | None:
@@ -141,6 +147,8 @@ def _matches(rule: LeashRule, facts: dict[str, Any]) -> bool:
     if False in results:
         return False
     if rule.outcome == LeashDecision.ALLOW:
+        if rule.applies_to not in ALLOW_ENABLED_ACTIONS:
+            return False
         # defence in depth: an ALLOW rule needs at least one condition, all true
         return bool(results) and None not in results
     return True
@@ -151,8 +159,9 @@ def evaluate_rules(
 ) -> tuple[LeashDecision, list[str]]:
     """Decide ALLOW/ASK/DENY for ``action``. Pure: no I/O, no mutation, no AI."""
     builtins = [r for r in BUILTIN_RULES if r.applies_to == action]
-    reserved = {r.id for r in builtins}
-    # Built-ins are authoritative: a policy rule reusing a built-in id is ignored.
+    reserved = {r.id for r in builtins} | {DEFAULT_RULE_ID}
+    # Built-ins are authoritative: a policy rule reusing a built-in id (or the
+    # reserved DEFAULT id) is ignored.
     rules = [r for r in policy.rules if r.applies_to == action and r.id not in reserved]
     rules.extend(builtins)
     matched = [r for r in rules if _matches(r, facts)]
