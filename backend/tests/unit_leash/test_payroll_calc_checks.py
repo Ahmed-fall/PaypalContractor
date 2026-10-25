@@ -533,3 +533,23 @@ def test_duplicates_are_detected_across_zero_padded_codes() -> None:
     assert check_line(line, HIST, "MS-01", POLICY, NOW).flags == ("PR-05",)
     odd = replace(line, entries=(replace(entries[0], milestone_code="odd"),) * 2)
     assert check_line(odd, HIST, "MS-01", POLICY, NOW).flags == ("PR-05",)
+
+
+@pytest.mark.parametrize(
+    ("paid", "run_code", "flags"),
+    [
+        ({"MS-1", "odd"}, "MS-01", ("PR-07",)),
+        ({"odd"}, "MS-01", ()),
+        ({"odd"}, "odd", ("PR-07",)),
+        ({"ms-01 "}, "MS-01", ("PR-07",)),
+        ({"odd", "other"}, "MS-01", ()),
+    ],
+)
+def test_pr07_unparseable_paid_codes_only_add_matches(
+    paid: set[str], run_code: str, flags: tuple[str, ...]
+) -> None:
+    line = _line(_member("Omar"), [_entry()])
+    hist = MemberHistory(PAID_BEFORE, frozenset(paid))
+    res = check_line(line, hist, run_code, POLICY, NOW)
+    assert res.flags == flags
+    assert res.decision == (DENY if flags else ALLOW)

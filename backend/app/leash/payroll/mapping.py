@@ -180,7 +180,8 @@ async def confirm_mapping(
         ) from exc
     clean = dict(confirmed.mapping)
     known = {normalise_header(h) for h in headers}
-    if any(normalise_header(key) not in known for key in clean):
+    keys = [normalise_header(key) for key in clean]
+    if len(set(keys)) != len(keys) or any(key not in known for key in keys):
         raise TimesheetError(
             "TIMESHEET_INVALID", "The column mapping does not match this timesheet."
         )

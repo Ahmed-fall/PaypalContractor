@@ -448,3 +448,13 @@ def test_hand_built_table_defaults_and_validates_row_numbers() -> None:
     assert _table(_row(), _row()).row_numbers == (2, 3)
     with pytest.raises(ValueError, match="row_numbers"):
         RawTable(headers=HEADERS, rows=(_row(),), row_numbers=(2, 3))
+
+
+@pytest.mark.asyncio
+async def test_confirm_rejects_keys_that_normalise_to_the_same_header() -> None:
+    store = InMemoryMappingStore()
+    bad = {**DEMO_MAPPING, "hrs ": "rate"}
+    with pytest.raises(TimesheetError) as ei:
+        await confirm_mapping(store, "sig", bad, HEADERS)
+    assert ei.value.code == "TIMESHEET_INVALID"
+    assert await store.get("sig") is None

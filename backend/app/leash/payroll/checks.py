@@ -79,18 +79,27 @@ def _has_duplicates(line: DraftLine) -> bool:
 
 
 def _already_paid(milestone_code: str, paid_milestones: frozenset[str]) -> bool:
-    """PR-07 test. Compares canonical keys (MS-1 equals MS-01).
+    """PR-07 test: True if the milestone was already paid. Fails closed.
 
-    If the run's code or any paid code is unparseable, the whole comparison falls
-    back to normalised strings (stripped, upper-cased): an unparseable code is paid
-    only when it is literally the same code, and never silently ignored.
+    Paid when (a) the run code parses and its canonical key (MS-1 equals MS-01)
+    equals the key of any paid code that parses, or (b) the normalised text
+    (stripped, upper-cased) equals that of any paid code. An unparseable paid code
+    can only add matches; it never hides another paid code.
     """
+    text = milestone_code.strip().upper()
+    if text in {c.strip().upper() for c in paid_milestones}:
+        return True
     try:
         wanted = milestone_key(milestone_code)
-        return wanted in {milestone_key(c) for c in paid_milestones}
     except ValueError:
-        text = milestone_code.strip().upper()
-        return text in {c.strip().upper() for c in paid_milestones}
+        return False
+    for code in paid_milestones:
+        try:
+            if milestone_key(code) == wanted:
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def _require_aware(value: datetime | None, name: str) -> None:
