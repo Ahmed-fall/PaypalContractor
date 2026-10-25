@@ -395,6 +395,10 @@ def test_known_conditions_vocabulary() -> None:
         {"amount": "200"},
         {"amount": "abc"},
         {"amount": Decimal("NaN")},
+        {"amount": Decimal("Infinity")},
+        {"amount": Decimal("-500.00")},
+        {"amount": Decimal(200)},
+        {"amount": Decimal("200.001")},
         {"extraction_confidence": True},
         {"extraction_confidence": "0.98"},
         {"extraction_confidence": float("nan")},
@@ -479,5 +483,64 @@ def test_builtin_not_added_for_other_actions() -> None:
         no_g05_policy(),
         GuardAction.PAY_TEAM_MEMBER,
         facts(line_items_match_decimal_total=False),
+    )
+    assert result == (ASK, DEFAULT)
+
+
+def _colliding_g05(when: dict[str, Any], outcome: LeashDecision) -> LeashRule:
+    # model_construct bypasses the validator so even an empty-when ASK is testable
+    return LeashRule.model_construct(
+        id="G-05",
+        applies_to=INVOICE,
+        when=when,
+        outcome=outcome,
+        source_text="evil",
+    )
+
+
+def _policy_with_g05(replacement: LeashRule) -> LeashPolicy:
+    rules = [replacement if r.id == "G-05" else r for r in default_policy().rules]
+    return LeashPolicy(version=1, rules=rules)
+
+
+COLLIDING_G05 = [
+    pytest.param({"line_items_sum_mismatch": False}, ASK, id="ask-never-fires"),
+    pytest.param({"line_items_sum_mismatch": True}, ALLOW, id="allow-on-mismatch"),
+    pytest.param({}, ASK, id="ask-empty-when"),
+]
+
+
+@pytest.mark.parametrize(("when", "outcome"), COLLIDING_G05)
+def test_policy_cannot_override_builtin_g05(
+    when: dict[str, Any], outcome: LeashDecision
+) -> None:
+    pol = _policy_with_g05(_colliding_g05(when, outcome))
+    result = evaluate_rules(pol, INVOICE, facts(line_items_match_decimal_total=False))
+    assert result == (DENY, ["G-05"])
+
+
+@pytest.mark.parametrize(("when", "outcome"), COLLIDING_G05)
+def test_colliding_g05_is_ignored_for_clean_facts(
+    when: dict[str, Any], outcome: LeashDecision
+) -> None:
+    pol = _policy_with_g05(_colliding_g05(when, outcome))
+    assert evaluate_rules(pol, INVOICE, facts()) == (ALLOW, G01)
+
+
+def test_rule_ids_are_deduplicated_in_order() -> None:
+    base = default_policy()
+    g02 = next(r for r in base.rules if r.id == "G-02")
+    pol = LeashPolicy(version=1, rules=[*base.rules, g02.model_copy(deep=True)])
+    assert evaluate_rules(pol, INVOICE, facts(amount="300.00")) == (ASK, ["G-02"])
+
+
+def test_allow_rule_with_empty_when_never_matches() -> None:
+    sneaky = LeashRule.model_construct(
+        id="Z-1", applies_to=INVOICE, when={}, outcome=ALLOW, source_text="t"
+    )
+    # the ALLOW-needs-a-condition validator re-runs on construction, so skip it
+    pol = LeashPolicy.model_construct(version=1, rules=[sneaky])
+    result = evaluate_rules(
+        pol, INVOICE, facts(amount="99999.00", extraction_confidence=0.1)
     )
     assert result == (ASK, DEFAULT)

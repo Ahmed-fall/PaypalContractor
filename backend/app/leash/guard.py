@@ -38,7 +38,9 @@ _RANK = {LeashDecision.ALLOW: 0, LeashDecision.ASK: 1, LeashDecision.DENY: 2}
 def _money(value: object) -> Decimal | None:
     """A finite Decimal, or a 2-dp string. Floats and anything else are unknown."""
     if isinstance(value, Decimal):
-        return value if value.is_finite() else None
+        if not value.is_finite() or value < 0 or value.as_tuple().exponent != -2:
+            return None
+        return value
     if isinstance(value, str) and _MONEY_2DP.fullmatch(value):
         return Decimal(value)
     return None
@@ -135,7 +137,8 @@ def _matches(rule: LeashRule, facts: dict[str, Any]) -> bool:
     if False in results:
         return False
     if rule.outcome == LeashDecision.ALLOW:
-        return None not in results
+        # defence in depth: an ALLOW rule needs at least one condition, all true
+        return bool(results) and None not in results
     return True
 
 
@@ -143,12 +146,13 @@ def evaluate_rules(
     policy: LeashPolicy, action: GuardAction, facts: dict[str, Any]
 ) -> tuple[LeashDecision, list[str]]:
     """Decide ALLOW/ASK/DENY for ``action``. Pure: no I/O, no mutation, no AI."""
-    rules = [r for r in policy.rules if r.applies_to == action]
-    if action == GuardAction.SEND_REMEDIATION_INVOICE:
-        present = {r.id for r in rules}
-        rules.extend(r for r in BUILTIN_RULES if r.id not in present)
+    builtins = [r for r in BUILTIN_RULES if r.applies_to == action]
+    reserved = {r.id for r in builtins}
+    # Built-ins are authoritative: a policy rule reusing a built-in id is ignored.
+    rules = [r for r in policy.rules if r.applies_to == action and r.id not in reserved]
+    rules.extend(builtins)
     matched = [r for r in rules if _matches(r, facts)]
     if not matched:
         return LeashDecision.ASK, [DEFAULT_RULE_ID]
     final = max((r.outcome for r in matched), key=_RANK.__getitem__)
-    return final, [r.id for r in matched if r.outcome == final]
+    return final, list(dict.fromkeys(r.id for r in matched if r.outcome == final))
