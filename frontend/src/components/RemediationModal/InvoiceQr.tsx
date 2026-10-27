@@ -53,7 +53,7 @@ export function InvoiceQr({ base64, payerUrl, size = 176 }: { base64: string | n
 
   return (
     <figure className="flex flex-col items-center">
-      <div className="rounded-lg border border-paper-line bg-white p-2" style={{ width: size + 18, height: size + 18 }}>
+      <div className="rounded border border-paper-line bg-white p-2" style={{ width: size + 18, height: size + 18 }}>
         {source.kind === "paypal" || source.kind === "local" ? (
           <img
             src={source.src}
@@ -69,8 +69,8 @@ export function InvoiceQr({ base64, payerUrl, size = 176 }: { base64: string | n
           <div className="flex h-full w-full items-center justify-center text-center text-xs text-ink-muted">Use the payer link</div>
         )}
       </div>
-      <figcaption className="mt-2 text-center text-[11px] text-ink-muted">
-        {source.kind === "local" ? "QR drawn in the browser from the payer link" : source.kind === "paypal" ? "QR from PayPal" : " "}
+      <figcaption className="mt-2 max-w-[200px] text-center text-[12px] leading-snug text-ink-muted">
+        {source.kind === "local" ? "Drawn from the invoice link because PayPal's code was unusable" : source.kind === "paypal" ? "Scan to pay on PayPal" : " "}
       </figcaption>
     </figure>
   );

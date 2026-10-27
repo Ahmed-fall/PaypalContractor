@@ -1,33 +1,36 @@
+import type { ReactNode } from "react";
 import type { DiscrepancyStatus, DiscrepancyType, LeashDecision, MarginPayrollStatus, RemediationSentBy } from "../../types/contracts";
 
 type Tone = "good" | "warn" | "bad" | "brand" | "neutral";
 
 const toneClass: Record<Tone, string> = {
-  good: "bg-good-soft text-good ring-good/20",
-  warn: "bg-warn-soft text-warn ring-warn/20",
-  bad: "bg-bad-soft text-bad ring-bad/20",
-  brand: "bg-brand-soft text-brand-dark ring-brand/20",
-  neutral: "bg-slate-100 text-ink-soft ring-slate-300/40",
+  good: "border-good/35 text-good",
+  warn: "border-warn/35 text-warn",
+  bad: "border-bad/40 text-bad",
+  brand: "border-ink/35 text-ink",
+  neutral: "border-paper-line text-ink-muted",
 };
 
-export function Pill({ tone, children, title }: { tone: Tone; children: React.ReactNode; title?: string }) {
+/** A stamped tag: outline and coloured text, no fill. Reads like a mark on a working paper. */
+export function Pill({ tone, children, title, solid = false }: { tone: Tone; children: ReactNode; title?: string; solid?: boolean }) {
   return (
     <span
       title={title}
-      className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset ${toneClass[tone]}`}
+      className={`inline-flex items-center whitespace-nowrap rounded-[3px] border px-1.5 py-px text-[12px] font-medium leading-[18px] ${
+        solid ? "border-transparent bg-bad text-white" : toneClass[tone]
+      }`}
     >
-      <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-current opacity-70" />
       {children}
     </span>
   );
 }
 
 export const COMPLIANCE_LABEL: Record<DiscrepancyType, string> = {
-  COMPLIANT: "Compliant",
+  COMPLIANT: "Paid in full",
   UNDERPAID: "Underpaid",
-  LATE_PAYMENT: "Late",
-  UNDERPAID_AND_LATE: "Underpaid + late",
-  CURRENCY_MISMATCH: "Currency mismatch",
+  LATE_PAYMENT: "Paid late",
+  UNDERPAID_AND_LATE: "Underpaid and late",
+  CURRENCY_MISMATCH: "Wrong currency",
 };
 
 const COMPLIANCE_TONE: Record<DiscrepancyType, Tone> = {
@@ -40,49 +43,48 @@ const COMPLIANCE_TONE: Record<DiscrepancyType, Tone> = {
 
 /** Audit reason (immutable). null means no capture yet. */
 export function ComplianceBadge({ type }: { type: DiscrepancyType | null }) {
-  if (!type) return <Pill tone="neutral">Awaiting payment</Pill>;
+  if (!type) return <Pill tone="neutral">Not paid yet</Pill>;
   return <Pill tone={COMPLIANCE_TONE[type]}>{COMPLIANCE_LABEL[type]}</Pill>;
 }
 
-/** Remediation lifecycle (Figure 8), kept separate from the reason. */
-export function LifecycleBadge({
-  status,
-  sentBy,
-  decision,
-}: {
-  status: DiscrepancyStatus;
-  sentBy: RemediationSentBy | null;
-  decision: LeashDecision | null;
-}) {
+/** Remediation lifecycle (Figure 8), shown as plain secondary text beside the reason. */
+export function LifecycleBadge({ status, sentBy, decision }: { status: DiscrepancyStatus; sentBy: RemediationSentBy | null; decision: LeashDecision | null }) {
+  const cls = "whitespace-nowrap text-[12px]";
   switch (status) {
     case "PENDING_APPROVAL":
-      return <Pill tone="brand" title={decision === "ASK" ? "Leash asked for your approval" : undefined}>Needs approval</Pill>;
+      return (
+        <span className={`${cls} font-medium text-bad`} title={decision === "ASK" ? "Leash asked for your approval" : undefined}>
+          Needs your approval
+        </span>
+      );
     case "BLOCKED":
-      return <Pill tone="bad">Blocked by Leash</Pill>;
+      return <span className={`${cls} font-medium text-bad`}>Blocked by Leash</span>;
     case "REMEDIATED":
-      return sentBy === "leash-auto" ? <Pill tone="good">Auto-sent by Leash</Pill> : <Pill tone="good">Invoice sent</Pill>;
+      return <span className={`${cls} text-ink-muted`}>{sentBy === "leash-auto" ? "Invoiced by Leash" : "Invoiced by you"}</span>;
     default:
       return null;
   }
 }
 
 export function DecisionBadge({ decision }: { decision: LeashDecision }) {
+  const label = decision === "ALLOW" ? "Allowed" : decision === "ASK" ? "Asks you" : "Denied";
   const tone: Tone = decision === "ALLOW" ? "good" : decision === "ASK" ? "brand" : "bad";
-  return <Pill tone={tone}>Leash: {decision}</Pill>;
+  return <Pill tone={tone}>Leash: {label}</Pill>;
 }
 
-const PAYROLL_TONE: Record<MarginPayrollStatus, Tone> = {
-  NONE: "neutral",
-  PREPARED: "neutral",
-  CHECKED: "brand",
-  AWAITING_APPROVAL: "brand",
-  SENT: "warn",
-  PAID: "good",
-  PARTIAL: "warn",
-  FAILED: "bad",
+const PAYROLL_LABEL: Record<MarginPayrollStatus, string> = {
+  NONE: "No run",
+  PREPARED: "Prepared",
+  CHECKED: "Checked",
+  AWAITING_APPROVAL: "Awaiting approval",
+  SENT: "Sending",
+  PAID: "Paid",
+  PARTIAL: "Partly paid",
+  FAILED: "Failed",
 };
 
 export function PayrollBadge({ status }: { status: MarginPayrollStatus }) {
-  const label = status === "NONE" ? "No run" : status.replace(/_/g, " ").toLowerCase().replace(/^\w/, (c) => c.toUpperCase());
-  return <Pill tone={PAYROLL_TONE[status]}>{label}</Pill>;
+  const c =
+    status === "PAID" ? "text-good" : status === "FAILED" ? "text-bad" : status === "NONE" ? "text-ink-muted" : status === "PARTIAL" || status === "SENT" ? "text-warn" : "text-ink";
+  return <span className={`whitespace-nowrap text-[13px] ${c}`}>{PAYROLL_LABEL[status]}</span>;
 }

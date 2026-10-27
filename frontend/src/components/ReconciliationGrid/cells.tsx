@@ -35,11 +35,11 @@ export function ExpandCell({ data, context }: P) {
 
 export function MilestoneCell({ data }: P) {
   if (!data) return null;
-  if (isTotals(data)) return <span className="text-xs font-semibold uppercase tracking-wide text-ink-soft">{data.milestone_code}</span>;
+  if (isTotals(data)) return <span className="text-[13px] font-semibold text-ink">{data.milestone_code}</span>;
   return (
     <div className="flex flex-col justify-center leading-tight">
-      <span className="font-mono text-[12.5px] font-semibold text-ink">{data.milestone_code}</span>
-      <span className="truncate text-xs text-ink-muted" title={data.milestone_title}>
+      <span className="text-[13.5px] font-semibold text-ink">{data.milestone_code}</span>
+      <span className="truncate text-[12.5px] text-ink-muted" title={data.milestone_title}>
         {data.milestone_title}
       </span>
     </div>
@@ -50,8 +50,8 @@ export function ClientCell({ data }: P) {
   if (!data || isTotals(data)) return null;
   return (
     <div className="flex flex-col justify-center leading-tight">
-      <span className="truncate font-medium text-ink">{data.client_name}</span>
-      <span className="truncate text-xs text-ink-muted" title={data.contract_title}>
+      <span className="truncate text-ink">{data.client_name}</span>
+      <span className="truncate text-[12.5px] text-ink-muted" title={data.contract_title}>
         {data.contract_title}
       </span>
     </div>
@@ -68,7 +68,7 @@ export function moneyCell(field: keyof GridRow & keyof TotalsRow, opts: { emphas
     if (!data) return null;
     const v = data[field] as string | null;
     if (!isTotals(data) && field === "captured_amount" && !data.captured_amount) {
-      return <span className="text-xs text-ink-muted">Not paid</span>;
+      return <span className="text-[13px] text-ink-muted">Nothing yet</span>;
     }
     const cents = toCents(v);
     const tone = opts.negativeTone && cents > 0 ? "text-bad" : cents === 0 ? "text-ink-muted" : "text-ink";
@@ -77,7 +77,7 @@ export function moneyCell(field: keyof GridRow & keyof TotalsRow, opts: { emphas
       <span className={`num ${tone} ${opts.emphasise ? "font-semibold" : ""}`}>
         {mismatch ? (
           <span title={`Arrived in ${data.captured_currency}; excluded from totals`}>
-            {data.captured_amount} <span className="rounded bg-warn-soft px-1 text-[10px] font-semibold text-warn">{data.captured_currency}</span>
+            {data.captured_amount} <span className="text-[11px] font-semibold text-warn">{data.captured_currency}</span>
           </span>
         ) : (
           formatMoney(v, data.currency)
@@ -89,7 +89,7 @@ export function moneyCell(field: keyof GridRow & keyof TotalsRow, opts: { emphas
 
 export function CaptureCell({ data }: P) {
   if (!data || isTotals(data)) return null;
-  if (!data.paypal_capture_id) return <span className="text-xs text-ink-muted">None</span>;
+  if (!data.paypal_capture_id) return <span className="text-[13px] text-ink-muted">None</span>;
   return (
     <span className="flex items-center gap-1.5" title={data.webhook_verified ? "Confirmed by a verified PayPal webhook" : "Awaiting webhook verification"}>
       {data.webhook_verified ? (
@@ -101,7 +101,7 @@ export function CaptureCell({ data }: P) {
           <path d="M10 2 3.5 4.6v4.9c0 4 2.8 7.4 6.5 8.4 3.7-1 6.5-4.4 6.5-8.4V4.6z" />
         </svg>
       )}
-      <span className="num truncate text-ink-soft">{data.paypal_capture_id}</span>
+      <span className="num truncate text-[13px] text-ink-soft">{data.paypal_capture_id}</span>
     </span>
   );
 }
@@ -109,7 +109,7 @@ export function CaptureCell({ data }: P) {
 export function StatusCell({ data }: P) {
   if (!data || isTotals(data)) return null;
   return (
-    <div className="flex h-full flex-wrap content-center items-center gap-1.5">
+    <div className="flex h-full flex-col justify-center gap-0.5 leading-tight">
       <ComplianceBadge type={data.discrepancy_type} />
       <LifecycleBadge status={data.discrepancy_status} sentBy={data.remediation_sent_by} decision={data.leash_decision} />
     </div>
@@ -136,14 +136,14 @@ export function ActionCell({ data, context }: P) {
   if (!data || isTotals(data) || !data.discrepancy_id) return null;
   const id = data.discrepancy_id;
   const s = data.discrepancy_status;
-  const label = s === "PENDING_APPROVAL" ? "Review & send" : s === "REMEDIATED" ? "View invoice" : s === "BLOCKED" ? "Why blocked" : "Details";
+  const label = s === "PENDING_APPROVAL" ? "Review invoice" : s === "REMEDIATED" ? "View invoice" : s === "BLOCKED" ? "Why blocked" : "Details";
   const primary = s === "PENDING_APPROVAL";
   return (
     <button
       type="button"
       onClick={() => context.openRemediation(id)}
-      className={`h-8 whitespace-nowrap rounded-md px-3 text-xs font-medium transition ${
-        primary ? "bg-ink text-white hover:bg-ink-soft" : "border border-paper-line bg-white text-ink hover:bg-paper"
+      className={`h-8 whitespace-nowrap rounded border px-3 text-[13px] font-medium transition-colors ${
+        primary ? "border-ink bg-ink text-white hover:bg-brand-dark" : "border-transparent text-ink underline decoration-paper-line underline-offset-4 hover:decoration-ink"
       }`}
     >
       {label}
@@ -156,17 +156,19 @@ export function DetailRow({ data, context }: P) {
   if (!data || isTotals(data)) return null;
   const r = data;
   return (
-    <div className="fd-detail-row grid h-full gap-5 overflow-y-auto border-l-4 border-brand/50 px-6 py-4 text-[13px] md:grid-cols-[1.3fr_1fr_1fr]">
+    <div className="fd-detail-row grid h-full gap-8 overflow-y-auto px-6 py-5 text-[13.5px] md:grid-cols-[1.4fr_1fr_1fr]">
       <div className="min-w-0">
-        <p className="text-[11px] font-semibold uppercase tracking-wider text-ink-muted">Violated clause</p>
+        <p className="text-[13px] font-medium text-ink-soft">The clause it breaks</p>
         {r.violated_clause_quote ? (
-          <blockquote className="mt-1.5 whitespace-normal border-l-2 border-amber-400 pl-3 leading-relaxed text-ink">{r.violated_clause_quote}</blockquote>
+          <p className="mt-1.5 whitespace-normal leading-relaxed text-ink">
+            <span className="hl-soft">{r.violated_clause_quote}</span>
+          </p>
         ) : (
-          <p className="mt-1.5 text-ink-muted">{r.discrepancy_type === "COMPLIANT" ? "None. Paid within terms." : "No payment yet."}</p>
+          <p className="mt-1.5 text-ink-muted">{r.discrepancy_type === "COMPLIANT" ? "None. Paid within the terms." : "No payment has arrived yet."}</p>
         )}
         {r.ai_audit_summary && (
           <>
-            <p className="mt-3 text-[11px] font-semibold uppercase tracking-wider text-ink-muted">AI audit summary</p>
+            <p className="mt-4 text-[13px] font-medium text-ink-soft">What the auditor wrote</p>
             <p className="mt-1 whitespace-normal leading-relaxed text-ink-soft">{r.ai_audit_summary}</p>
           </>
         )}
@@ -195,8 +197,8 @@ export function DetailRow({ data, context }: P) {
         </dd>
         {r.discrepancy_id && (
           <dd className="col-span-2 pt-1">
-            <button type="button" className="text-xs font-medium text-brand hover:underline" onClick={() => context.openRemediation(r.discrepancy_id!)}>
-              Open remediation
+            <button type="button" className="text-[13px] font-medium text-ink underline underline-offset-4" onClick={() => context.openRemediation(r.discrepancy_id!)}>
+              Open the correction invoice
             </button>
           </dd>
         )}

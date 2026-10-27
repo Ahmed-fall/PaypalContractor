@@ -3,9 +3,9 @@ import type { DecisionLogEntry, LedgerRow, RemediationInvoiceRecord, Remediation
 import { api, isApiError } from "../../api/client";
 import { Modal } from "../common/Modal";
 import { Button, Spinner } from "../common/Button";
-import { ComplianceBadge, DecisionBadge, LifecycleBadge } from "../common/StatusBadge";
+import { ComplianceBadge, LifecycleBadge } from "../common/StatusBadge";
 import { InvoiceQr } from "./InvoiceQr";
-import { formatMoney, toCents } from "../../lib/money";
+import { formatMoney } from "../../lib/money";
 import { formatDate, formatDateTime } from "../../lib/dates";
 
 interface Props {
@@ -16,11 +16,14 @@ interface Props {
   onStale: () => void; // ask the page to reload the ledger
 }
 
-function MathRow({ label, value, currency, strong, tone }: { label: string; value: string | null; currency: string; strong?: boolean; tone?: "bad" }) {
+function MathRow({ op, label, value, currency, total }: { op?: string; label: string; value: string | null; currency: string; total?: boolean }) {
   return (
-    <div className={`flex items-baseline justify-between gap-4 py-1.5 ${strong ? "border-t border-paper-line pt-2.5 text-base font-semibold" : "text-sm"}`}>
-      <span className={strong ? "text-ink" : "text-ink-muted"}>{label}</span>
-      <span className={`font-mono tabular-nums ${tone === "bad" && toCents(value) > 0 ? "text-bad" : "text-ink"}`}>{formatMoney(value, currency)}</span>
+    <div className={`grid grid-cols-[18px_1fr_auto] items-baseline gap-x-2 py-1.5 ${total ? "mt-1 border-t-[3px] border-double border-ink pt-2.5" : ""}`}>
+      <span aria-hidden className="text-center text-ink-muted">{op ?? ""}</span>
+      <span className={total ? "font-semibold text-ink" : "text-ink-soft"}>{label}</span>
+      <span className={`num text-right ${total ? "text-[18px] font-semibold text-ink" : "text-ink"}`}>
+        {total ? <span className="hl">{formatMoney(value, currency)}</span> : formatMoney(value, currency)}
+      </span>
     </div>
   );
 }
@@ -84,7 +87,7 @@ export function RemediationModal({ row, open, onClose, onSent, onStale }: Props)
         setError(`Leash denied this invoice: ${e.message}`);
         onStale();
       } else if (isApiError(e) && e.code === "DEMO_KEY_REQUIRED") {
-        setError("Unlock with the owner key, then press Approve & Send again.");
+        setError("Unlock with the owner key, then approve again.");
         lock.current = false;
       } else {
         const msg = e instanceof Error ? e.message : "Sending failed.";
@@ -123,7 +126,7 @@ export function RemediationModal({ row, open, onClose, onSent, onStale }: Props)
             <Spinner /> Sending…
           </>
         ) : (
-          `Approve & Send ${formatMoney(row.total_remediation_amount, c)}`
+          `Approve and send ${formatMoney(row.total_remediation_amount, c)}`
         )}
       </Button>
     </>
@@ -138,28 +141,27 @@ export function RemediationModal({ row, open, onClose, onSent, onStale }: Props)
       open={open}
       onClose={onClose}
       width="lg"
-      title={`${row.milestone_code} · ${row.client_name}`}
+      title={`${row.client_name}, ${row.milestone_code}`}
       subtitle={
         <span className="flex flex-wrap items-center gap-2 pt-1">
           <ComplianceBadge type={row.discrepancy_type} />
           <LifecycleBadge status={status} sentBy={sentBy} decision={row.leash_decision} />
-          <span className="font-mono text-xs">{row.discrepancy_id}</span>
+          <span className="num text-[12.5px] text-ink-muted">{row.discrepancy_id}</span>
         </span>
       }
       footer={footer}
     >
       {sentBy === "leash-auto" && invoice && (
-        <div className="mb-5 rounded-lg border border-good/25 bg-good-soft px-4 py-3 text-sm" data-testid="leash-auto-banner">
+        <div className="mb-6 border-l-[3px] border-good py-1 pl-4 text-[14px]" data-testid="leash-auto-banner">
           <p className="font-semibold text-good">Sent automatically by Leash (rule {decision?.rule_ids[0] ?? "G-01"})</p>
           <p className="mt-0.5 text-ink-soft">{decision?.reason ?? "Within your auto-send limit and the breached clause is quoted."}</p>
         </div>
       )}
       {canApprove && (
-        <div className="mb-5 rounded-lg border border-brand/25 bg-brand-soft px-4 py-3 text-sm">
-          <p className="flex flex-wrap items-center gap-2 font-semibold text-brand-dark">
-            Leash is asking for your approval
-            {decision && <DecisionBadge decision={decision.decision} />}
-            {decision?.rule_ids.length ? <span className="font-mono text-xs font-normal">rule {decision.rule_ids.join(", ")}</span> : null}
+        <div className="mb-6 border-l-[3px] border-bad py-1 pl-4 text-[14px]">
+          <p className="flex flex-wrap items-center gap-2 font-semibold text-ink">
+            Leash wants your approval before sending
+            {decision?.rule_ids.length ? <span className="text-[13px] font-normal text-ink-muted">rule {decision.rule_ids.join(", ")}</span> : null}
           </p>
           <p className="mt-0.5 text-ink-soft">
             {decision?.reason ?? (decisionLoading ? "Loading Leash's reason…" : "Review the amount and clause, then approve to send the PayPal invoice.")}
@@ -167,68 +169,68 @@ export function RemediationModal({ row, open, onClose, onSent, onStale }: Props)
         </div>
       )}
       {blocked && (
-        <div className="mb-5 rounded-lg border border-bad/25 bg-bad-soft px-4 py-3 text-sm">
+        <div className="mb-6 border-l-[3px] border-bad py-1 pl-4 text-[14px]">
           <p className="font-semibold text-bad">Blocked by Leash{decision?.rule_ids.length ? ` (rule ${decision.rule_ids.join(", ")})` : ""}</p>
           <p className="mt-0.5 text-ink-soft">{decision?.reason ?? "Leash will not send this invoice. Edit the contract terms to re-evaluate it."}</p>
         </div>
       )}
 
-      <div className="grid gap-6 md:grid-cols-[1fr_1.15fr]">
-        <section>
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-ink-muted">How we got to {formatMoney(row.total_remediation_amount, c)}</h3>
-          <div className="mt-2 rounded-lg border border-paper-line px-4 py-2">
-            <MathRow label={`Expected (due ${formatDate(row.due_date)})`} value={row.expected_amount} currency={c} />
-            <MathRow label={`Captured${row.captured_at ? ` (${formatDate(row.captured_at)})` : ""}`} value={row.captured_amount} currency={row.captured_currency ?? c} />
-            <MathRow label="Shortfall" value={row.shortfall_amount} currency={c} tone="bad" />
-            <MathRow label="Contract penalty" value={row.penalty_amount} currency={c} tone="bad" />
-            <MathRow label="Correction invoice" value={row.total_remediation_amount} currency={c} strong />
+      <div className="grid gap-8 md:grid-cols-[1fr_1.1fr]">
+        <section aria-label="How the amount was computed">
+          <h3 className="text-[14px] font-semibold text-ink">How {formatMoney(row.total_remediation_amount, c)} is owed</h3>
+          <div className="mt-3 text-[14px]">
+            <MathRow label={`Contract amount, due ${formatDate(row.due_date)}`} value={row.expected_amount} currency={c} />
+            <MathRow op="−" label={`Received${row.captured_at ? ` on ${formatDate(row.captured_at)}` : ""}`} value={row.captured_amount} currency={row.captured_currency ?? c} />
+            <MathRow op="=" label="Short paid" value={row.shortfall_amount} currency={c} />
+            <MathRow op="+" label="Contract penalty" value={row.penalty_amount} currency={c} />
+            <MathRow label="Correction invoice" value={row.total_remediation_amount} currency={c} total />
           </div>
-          <p className="mt-2 text-[11px] text-ink-muted">Computed in code from the activated contract terms. The AI never sets an amount.</p>
+          <p className="mt-3 text-[12.5px] leading-relaxed text-ink-muted">Calculated in code from the terms you activated. The AI never sets an amount.</p>
         </section>
 
-        <section className="space-y-4">
+        <section className="space-y-5">
           <div>
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-ink-muted">Clause</h3>
-            <blockquote className="mt-2 border-l-2 border-amber-400 pl-3 text-sm leading-relaxed text-ink">
-              {row.violated_clause_quote ?? "No clause recorded."}
-            </blockquote>
+            <h3 className="text-[14px] font-semibold text-ink">The clause it breaks</h3>
+            <p className="mt-2 text-[14px] leading-relaxed text-ink">
+              {row.violated_clause_quote ? <span className="hl-soft">{row.violated_clause_quote}</span> : "No clause recorded."}
+            </p>
           </div>
           <div>
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-ink-muted">AI note on the invoice</h3>
-            <p className="mt-2 text-sm leading-relaxed text-ink-soft">{row.ai_audit_summary ?? "No summary."}</p>
+            <h3 className="text-[14px] font-semibold text-ink">Note printed on the invoice</h3>
+            <p className="mt-2 text-[14px] leading-relaxed text-ink-soft">{row.ai_audit_summary ?? "No note."}</p>
           </div>
         </section>
       </div>
 
       {error && (
-        <p role="alert" className="mt-5 rounded-md bg-bad-soft px-3 py-2 text-sm text-bad">
+        <p role="alert" className="mt-5 rounded bg-bad-soft px-3 py-2 text-sm text-bad">
           {error}
         </p>
       )}
 
       {invoice && (
-        <section className="mt-6 rounded-xl border border-paper-line bg-paper/50 p-4" data-testid="invoice-panel">
+        <section className="mt-7 border-t border-paper-line pt-6" data-testid="invoice-panel">
           <div className="flex flex-col gap-5 sm:flex-row sm:items-center">
             <InvoiceQr base64={invoice.qr_code_base64} payerUrl={invoice.payer_view_url} />
-            <dl className="grid min-w-0 flex-1 grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+            <dl className="grid min-w-0 flex-1 grid-cols-[auto_1fr] gap-x-5 gap-y-2 text-[14px]">
               <dt className="text-ink-muted">PayPal invoice</dt>
-              <dd className="truncate font-mono font-medium text-ink" data-testid="invoice-id">
+              <dd className="num truncate font-medium text-ink" data-testid="invoice-id">
                 {invoice.paypal_invoice_id}
               </dd>
               <dt className="text-ink-muted">Number</dt>
-              <dd className="font-mono text-ink">{invoice.paypal_invoice_number}</dd>
+              <dd className="num text-ink">{invoice.paypal_invoice_number}</dd>
               <dt className="text-ink-muted">Amount</dt>
-              <dd className="font-mono text-ink">{formatMoney(invoice.total_amount, invoice.currency)}</dd>
+              <dd className="num text-ink">{formatMoney(invoice.total_amount, invoice.currency)}</dd>
               <dt className="text-ink-muted">Sent to</dt>
               <dd className="truncate text-ink">{invoice.recipient_email}</dd>
               <dt className="text-ink-muted">Status</dt>
               <dd className="text-ink">
-                {invoice.status}
-                {invoice.sent_at ? ` · ${formatDateTime(invoice.sent_at)}` : ""}
+                {invoice.status === "SENT" ? "Sent" : invoice.status}
+                {invoice.sent_at ? `, ${formatDateTime(invoice.sent_at)}` : ""}
               </dd>
               <dd className="col-span-2 pt-1">
-                <a href={invoice.payer_view_url} target="_blank" rel="noreferrer noopener" className="text-sm font-medium text-brand hover:underline">
-                  Open the payer's view on PayPal ↗
+                <a href={invoice.payer_view_url} target="_blank" rel="noreferrer noopener" className="text-[14px] font-medium text-ink underline underline-offset-4">
+                  Open the invoice as the client sees it
                 </a>
               </dd>
             </dl>

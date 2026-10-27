@@ -8,13 +8,13 @@ import { PageHeader } from "../components/common/Card";
 export default function LeashPlaceholder({ title, route }: { title: string; route: string }) {
   return (
     <div>
-      <PageHeader eyebrow="Leash" title={title} />
-      <div className="rounded-xl border border-dashed border-slate-300 bg-white p-8 text-sm text-ink-muted">
+      <PageHeader title={title} />
+      <div className="max-w-[68ch] rounded-lg border border-dashed border-paper-line bg-white p-8 text-[14px] leading-relaxed text-ink-muted">
         <p className="font-medium text-ink">This screen is built by the Leash owner (Person 5).</p>
         <p className="mt-2">
-          Route <code className="font-mono text-ink">{route}</code> is wired in the app shell. The shared API client
-          (<code className="font-mono">src/api/client.ts</code>) already exposes every Leash endpoint and serves them from
-          <code className="font-mono"> shared/fixtures/leash</code> in mock mode.
+          Route <code className="num text-ink">{route}</code> is wired in the app shell. The shared API client
+          (<code className="num">src/api/client.ts</code>) already exposes every Leash endpoint and serves them from
+          <code className="num"> shared/fixtures/leash</code> in mock mode.
         </p>
       </div>
     </div>

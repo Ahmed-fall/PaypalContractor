@@ -81,22 +81,13 @@ function NewContract() {
   return (
     <div className="mx-auto max-w-3xl">
       <PageHeader
-        eyebrow="Step 1 · Contract"
-        title="Upload a signed contract"
-        description="The AI reads the legal clauses and turns them into payment rules: milestones, due dates, grace period and late fee. You review every field before anything is monitored."
+        title="Add a contract"
+        description="Upload the signed contract. The AI reads its payment clauses into rules: milestones, due dates, grace period and late fee. Nothing is audited until you have checked every rule and activated it."
       />
       <UploadPanel busy={busy} error={error} onSubmit={submit} samples={samples} />
-      <ul className="mt-6 grid gap-3 text-xs text-ink-muted sm:grid-cols-3">
-        <li className="rounded-lg border border-paper-line bg-white p-3">
-          <span className="font-semibold text-ink">AI extracts.</span> Each rule links back to the clause it came from.
-        </li>
-        <li className="rounded-lg border border-paper-line bg-white p-3">
-          <span className="font-semibold text-ink">You confirm.</span> Nothing is enforced until you activate.
-        </li>
-        <li className="rounded-lg border border-paper-line bg-white p-3">
-          <span className="font-semibold text-ink">Code decides.</span> Amounts owed are always computed in code, never by the AI.
-        </li>
-      </ul>
+      <p className="mt-5 text-[13px] leading-relaxed text-ink-muted">
+        Each rule keeps the clause it came from, so you can check it against the contract. Amounts owed are always calculated in code from the rules you activate, never by the AI.
+      </p>
     </div>
   );
 }
@@ -132,7 +123,7 @@ function ReviewContract({ contractId }: { contractId: string }) {
       setTerms(extraction);
       setEditing(false);
       setShowErrors(false);
-      toast.show("Contract activated. Payments against it are now audited.", "success");
+      toast.show("Contract activated. Its payments are now audited.", "success");
     } catch {
       /* the client already raised the toast or the unlock dialog */
     } finally {
@@ -143,11 +134,11 @@ function ReviewContract({ contractId }: { contractId: string }) {
   if (!record || !terms) {
     return (
       <div className="mx-auto max-w-lg py-16 text-center">
-        <h1 className="text-xl font-semibold text-ink">Contract not found in this tab</h1>
+        <h1 className="text-[22px] font-semibold text-ink">This contract isn't open in this tab</h1>
         <p className="mt-2 text-sm text-ink-muted">
-          Reviewed contracts are kept in this browser tab. Upload it again to review or edit its terms.
+          Contracts you review are kept in the browser tab you reviewed them in. Upload it again to check or change its terms.
         </p>
-        <Link to="/contracts/new" className="mt-6 inline-block text-sm font-medium text-brand hover:underline">
+        <Link to="/contracts/new" className="mt-6 inline-block text-[14px] font-medium text-ink underline underline-offset-4">
           Upload a contract
         </Link>
       </div>
@@ -158,12 +149,11 @@ function ReviewContract({ contractId }: { contractId: string }) {
   return (
     <div>
       <PageHeader
-        eyebrow={active ? "Contract · monitoring" : "Step 2 · Review"}
-        title={terms.contract_title || "Untitled contract"}
+                title={terms.contract_title || "Untitled contract"}
         description={
           active
-            ? "These terms are locked in. Every PayPal payment against these milestones is audited automatically."
-            : "Check each rule against the highlighted clauses, fix anything the AI got wrong, then activate."
+            ? "These terms are active. Every PayPal payment against these milestones is checked against them."
+            : "Check each rule against the highlighted clause it came from, correct anything the AI misread, then activate."
         }
         actions={
           <>
@@ -184,16 +174,16 @@ function ReviewContract({ contractId }: { contractId: string }) {
           />
         </div>
 
-        <div className="rounded-xl border border-paper-line bg-white shadow-card">
+        <div className="rounded-lg border border-paper-line bg-white">
           <div className="p-5 sm:p-6">
             <RulesEditor value={terms} onChange={setTerms} errors={showErrors ? errors : {}} readOnly={!editing || busy} aiValues={aiValues} />
           </div>
-          <div className="sticky bottom-0 flex flex-wrap items-center justify-between gap-3 rounded-b-xl border-t border-paper-line bg-white/95 px-5 py-4 backdrop-blur sm:px-6">
+          <div className="sticky bottom-0 flex flex-wrap items-center justify-between gap-3 rounded-b-lg border-t border-paper-line bg-white/95 px-5 py-4 backdrop-blur sm:px-6">
             <p className="text-xs text-ink-muted">
               {editing
                 ? showErrors && errorCount
                   ? `${errorCount} field${errorCount > 1 ? "s" : ""} need attention.`
-                  : "Nothing is monitored until you activate."
+                  : "Payments are not audited until you activate."
                 : `Contract ${contractId}`}
             </p>
             <div className="flex flex-wrap gap-2">
@@ -224,7 +214,7 @@ function ReviewContract({ contractId }: { contractId: string }) {
                   )}
                   <Button onClick={activate} disabled={busy}>
                     {busy && <Spinner />}
-                    {active ? "Save and re-activate" : "Activate Contract Monitoring"}
+                    {active ? "Save and reactivate" : "Activate contract"}
                   </Button>
                 </>
               )}

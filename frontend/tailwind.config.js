@@ -4,18 +4,22 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ["Inter", "ui-sans-serif", "system-ui", "sans-serif"],
-        mono: ["'JetBrains Mono'", "ui-monospace", "SFMono-Regular", "monospace"],
+        sans: ["'IBM Plex Sans'", "ui-sans-serif", "system-ui", "sans-serif"],
+        cond: ["'IBM Plex Sans Condensed'", "'IBM Plex Sans'", "sans-serif"],
       },
       colors: {
-        ink: { DEFAULT: "#0f172a", soft: "#334155", muted: "#64748b" },
-        paper: { DEFAULT: "#f6f7f9", card: "#ffffff", line: "#e2e8f0" },
-        brand: { DEFAULT: "#0b5cff", dark: "#0848c8", soft: "#e8efff" },
-        good: { DEFAULT: "#0f7a4f", soft: "#e6f4ee" },
-        warn: { DEFAULT: "#a15c00", soft: "#fdf3e1" },
-        bad: { DEFAULT: "#b42318", soft: "#fdecea" },
+        // An auditor's working file: petrol ink on cool paper, red for money owed,
+        // and a highlighter used only where a clause or an amount is being called out.
+        ink: { DEFAULT: "#16302F", soft: "#3E5654", muted: "#6B7F7C" },
+        paper: { DEFAULT: "#F2F4F3", card: "#FFFFFF", line: "#D9DEDC", rule: "#E8ECEA" },
+        brand: { DEFAULT: "#16302F", dark: "#0E2221", soft: "#E3ECEA" },
+        good: { DEFAULT: "#2E6B4F", soft: "#E4F0EA" },
+        warn: { DEFAULT: "#8A5A00", soft: "#FBF1DA" },
+        bad: { DEFAULT: "#B3261E", soft: "#FBE9E7" },
+        hl: { DEFAULT: "#F3DF6B", soft: "#FBF3C4" },
       },
-      boxShadow: { card: "0 1px 2px rgba(15,23,42,.06), 0 1px 1px rgba(15,23,42,.04)" },
+      borderRadius: { DEFAULT: "4px", md: "5px", lg: "6px", xl: "8px", "2xl": "10px" },
+      boxShadow: { card: "none", pop: "0 12px 32px rgba(22,48,47,.18)" },
     },
   },
   plugins: [],

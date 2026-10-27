@@ -49,24 +49,19 @@ export function SourcePane({ filename, file, text, milestoneQuotes, penaltyQuote
   const paragraphs = useMemo(() => (text ? plain(text).split(/\n\s*\n/) : []), [text]);
 
   return (
-    <div className="flex h-full min-h-[420px] flex-col overflow-hidden rounded-xl border border-paper-line bg-white shadow-card">
+    <div className="flex h-full min-h-[420px] flex-col overflow-hidden rounded-lg border border-paper-line bg-white">
       <div className="flex items-center justify-between gap-3 border-b border-paper-line px-4 py-2.5">
-        <p className="truncate text-sm font-medium text-ink" title={filename}>
+        <p className="truncate text-[14px] font-medium text-ink" title={filename}>
           {filename}
         </p>
-        <div className="flex shrink-0 items-center gap-3 text-[11px] text-ink-muted">
-          <span className="flex items-center gap-1">
-            <span className="h-2.5 w-2.5 rounded-sm bg-brand/25 ring-1 ring-brand/40" /> Milestone
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="h-2.5 w-2.5 rounded-sm bg-amber-200 ring-1 ring-amber-400/60" /> Penalty
-          </span>
-        </div>
+        <p className="shrink-0 text-[12.5px] text-ink-muted">
+          <span className="hl-soft text-ink">Highlighted</span> clauses became rules
+        </p>
       </div>
       {pdfUrl ? (
         <iframe title="Contract PDF" src={pdfUrl} className="min-h-[560px] w-full flex-1" />
       ) : paragraphs.length ? (
-        <article className="flex-1 space-y-3 overflow-y-auto px-5 py-4 text-[13.5px] leading-relaxed text-ink-soft">
+        <article className="flex-1 space-y-3 overflow-y-auto px-6 py-5 text-[14px] leading-[1.65] text-ink-soft">
           {paragraphs.map((p, i) => {
             const label = /Section\s+\d+(?:\.\d+)*/i.exec(p)?.[0]?.replace(/\s+/g, " ").toLowerCase();
             const kind = label ? marks.get(label) : undefined;
@@ -75,29 +70,27 @@ export function SourcePane({ filename, file, text, milestoneQuotes, penaltyQuote
               <p
                 key={i}
                 className={
-                  kind === "milestone"
-                    ? "-mx-2 rounded-md bg-brand/10 px-2 py-1 text-ink ring-1 ring-brand/30"
-                    : kind === "penalty"
-                      ? "-mx-2 rounded-md bg-amber-100 px-2 py-1 text-ink ring-1 ring-amber-400/50"
-                      : isHeading
+                  kind
+                    ? "text-ink"
+                    : isHeading
                         ? "pt-2 font-semibold text-ink"
                         : i === 0
                           ? "text-base font-semibold text-ink"
                           : ""
                 }
               >
-                {p}
+                {kind ? <span className="hl-soft">{p}</span> : p}
               </p>
             );
           })}
         </article>
       ) : (
-        <div className="flex flex-1 flex-col justify-center gap-3 px-5 py-6 text-sm text-ink-muted">
+        <div className="flex flex-1 flex-col justify-center gap-3 px-6 py-6 text-[14px] text-ink-muted">
           <p>The original file is not kept in the browser after a refresh. These are the clauses the AI cited:</p>
           {[...milestoneQuotes, penaltyQuote].filter(Boolean).map((q, i) => (
-            <blockquote key={i} className="border-l-2 border-brand/40 pl-3 text-ink-soft">
-              {q}
-            </blockquote>
+            <p key={i} className="text-ink">
+              <span className="hl-soft">{q}</span>
+            </p>
           ))}
         </div>
       )}

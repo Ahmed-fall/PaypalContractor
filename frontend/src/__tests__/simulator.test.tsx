@@ -26,12 +26,12 @@ describe("Payment simulator against the fixture-backed mock API (TST-11)", () =>
         <PaymentSimulator rows={rows} initialMilestoneId="ms_01" />
       </MemoryRouter>,
     );
-    await user.click(screen.getByLabelText(/B · Underpay, five days late/));
+    await user.click(screen.getByLabelText(/Too little, five days late/));
     await user.click(screen.getByTestId("sim-run"));
     const result = await screen.findByTestId("sim-result");
-    expect(within(result).getByText("Underpaid + late")).toBeInTheDocument();
+    expect(within(result).getByText("Underpaid and late")).toBeInTheDocument();
     expect(within(result).getByText("$200.00")).toBeInTheDocument();
-    expect(within(screen.getByTestId("sim-leash")).getByText("Leash: ALLOW")).toBeInTheDocument();
+    expect(within(screen.getByTestId("sim-leash")).getByText("Leash: Allowed")).toBeInTheDocument();
     expect(await screen.findByTestId("sim-invoice-id")).toHaveTextContent(/^INV2-/);
 
     const after = await api.ledger();

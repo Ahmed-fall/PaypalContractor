@@ -22,12 +22,11 @@ export default function SimulatorPage() {
   return (
     <div>
       <PageHeader
-        eyebrow="Detective"
-        title="Client payment simulator"
-        description="Play the client: pay a milestone through the PayPal sandbox and watch the audit, the Leash decision and the correction invoice happen."
+        title="Simulate a client payment"
+        description="Pay a milestone as the client would, through the PayPal sandbox. The payment is audited against its contract and Leash decides what happens next."
       />
       {rows === null ? (
-        <div className="h-64 animate-pulse rounded-xl bg-white" />
+        <div className="h-64 animate-pulse rounded-lg bg-white" />
       ) : (
         <PaymentSimulator rows={rows} initialMilestoneId={params.get("milestone")} />
       )}

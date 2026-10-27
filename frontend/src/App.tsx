@@ -27,15 +27,14 @@ const LEASH_NAV = [
 
 function NavGroup({ label, items }: { label: string; items: { to: string; label: string }[] }) {
   return (
-    <div className="flex items-center gap-1">
-      <span className="mr-1 hidden text-[11px] font-semibold uppercase tracking-wider text-slate-400 lg:inline">{label}</span>
+    <div className="flex items-stretch gap-5" role="group" aria-label={label}>
       {items.map((i) => (
         <NavLink
           key={i.to}
           to={i.to}
           className={({ isActive }) =>
-            `whitespace-nowrap rounded-md px-2.5 py-1.5 text-sm font-medium transition ${
-              isActive ? "bg-white/10 text-white" : "text-slate-300 hover:bg-white/5 hover:text-white"
+            `-mb-px flex items-center whitespace-nowrap border-b-2 text-[14px] transition-colors ${
+              isActive ? "border-ink font-medium text-ink" : "border-transparent text-ink-muted hover:text-ink"
             }`
           }
         >
@@ -47,26 +46,23 @@ function NavGroup({ label, items }: { label: string; items: { to: string; label:
 }
 
 function SandboxBadge({ health }: { health: HealthResponse | null | "down" }) {
+  const base = "flex items-center gap-2 whitespace-nowrap text-[13px]";
+  const dot = (c: string) => <span aria-hidden className={`h-2 w-2 rounded-full ${c}`} />;
   if (apiConfig.useMocks) {
     return (
-      <span className="rounded-full bg-amber-400/15 px-2.5 py-1 text-xs font-medium text-amber-300 ring-1 ring-inset ring-amber-300/30" title="Serving shared/fixtures; no backend or PayPal calls">
-        Mock data
+      <span className={`${base} text-warn`} title="Serving shared/fixtures; no backend or PayPal calls">
+        {dot("bg-warn")}
+        <span className="hidden sm:inline">Sample data</span>
       </span>
     );
   }
-  if (health === null) return <span className="text-xs text-slate-400">Checking…</span>;
-  if (health === "down") {
-    return <span className="rounded-full bg-red-400/15 px-2.5 py-1 text-xs font-medium text-red-300 ring-1 ring-inset ring-red-300/30">API offline</span>;
-  }
+  if (health === null) return <span className={`${base} text-ink-muted`}>Connecting…</span>;
+  if (health === "down") return <span className={`${base} text-bad`}>{dot("bg-bad")}API offline</span>;
   const ok = health.paypal_sandbox_connected;
   return (
-    <span
-      className={`rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset ${
-        ok ? "bg-emerald-400/15 text-emerald-300 ring-emerald-300/30" : "bg-amber-400/15 text-amber-300 ring-amber-300/30"
-      }`}
-      title={health.ai_provider ? `AI: ${health.ai_provider}` : undefined}
-    >
-      PayPal sandbox{ok ? "" : " (not connected)"}
+    <span className={`${base} ${ok ? "text-good" : "text-warn"}`} title={health.ai_provider ? `AI: ${health.ai_provider}` : undefined}>
+      {dot(ok ? "bg-good" : "bg-warn")}
+      <span className="hidden sm:inline">{ok ? "PayPal sandbox" : "Sandbox not connected"}</span>
     </span>
   );
 }
@@ -93,27 +89,30 @@ export default function App() {
   return (
     <ToastProvider>
       <div className="min-h-screen">
-        <header className="sticky top-0 z-40 bg-ink">
-          <div className="mx-auto flex max-w-[1440px] flex-wrap items-center gap-x-4 px-4 sm:px-6 md:h-14 md:flex-nowrap">
-            <NavLink to="/ledger" className="flex h-14 shrink-0 items-center gap-2 text-white">
+        <header className="sticky top-0 z-40 border-b border-paper-line bg-white">
+          <div className="mx-auto flex max-w-[1440px] flex-wrap items-stretch gap-x-8 px-4 sm:px-6 md:h-14 md:flex-nowrap">
+            <NavLink to="/ledger" className="flex h-14 shrink-0 items-center gap-2.5 text-ink">
               <img src="/favicon.svg" alt="" className="h-7 w-7" />
-              <span className="hidden text-sm font-semibold tracking-tight sm:inline">The Financial Detective</span>
+              <span className="whitespace-nowrap text-[15px] font-semibold tracking-[-0.01em]">Financial Detective</span>
             </NavLink>
-            <nav className="order-last -mx-4 flex w-[calc(100%+2rem)] min-w-0 items-center gap-4 overflow-x-auto border-t border-white/10 px-4 py-2 md:order-none md:mx-0 md:w-auto md:flex-1 md:border-0 md:px-0 md:py-0" aria-label="Main">
+            <nav
+              className="order-last -mx-4 flex h-11 w-[calc(100%+2rem)] min-w-0 items-stretch gap-6 overflow-x-auto border-t border-paper-rule px-4 md:order-none md:mx-0 md:h-auto md:w-auto md:flex-1 md:border-0 md:px-0"
+              aria-label="Main"
+            >
               <NavGroup label="Detective" items={DETECTIVE_NAV} />
-              <span aria-hidden className="h-5 w-px shrink-0 bg-white/15" />
+              <span aria-hidden className="my-auto h-4 w-px shrink-0 bg-paper-line" />
               <NavGroup label="Leash" items={LEASH_NAV} />
             </nav>
-            <div className="ml-auto flex shrink-0 items-center gap-3 md:ml-0">
+            <div className="ml-auto flex shrink-0 items-center gap-3 sm:gap-5 md:ml-0">
               <SandboxBadge health={health} />
               <button
                 type="button"
                 onClick={openUnlock}
-                className={`rounded-md px-3 py-1.5 text-sm font-medium ring-1 ring-inset transition ${
-                  unlocked ? "text-emerald-300 ring-emerald-300/30 hover:bg-white/5" : "bg-white text-ink ring-white hover:bg-slate-100"
+                className={`h-8 rounded border px-3 text-[13px] font-medium transition-colors ${
+                  unlocked ? "border-paper-line text-ink-soft hover:border-ink-muted" : "border-ink bg-ink text-white hover:bg-brand-dark"
                 }`}
               >
-                {unlocked ? "Unlocked" : "Unlock"}
+                {unlocked ? <><span className="sm:hidden">Unlocked</span><span className="hidden sm:inline">Owner unlocked</span></> : "Unlock"}
               </button>
             </div>
           </div>

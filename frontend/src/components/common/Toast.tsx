@@ -55,20 +55,14 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           <div
             key={t.id}
             role={t.tone === "error" ? "alert" : "status"}
-            className={`pointer-events-auto rounded-lg border bg-white px-4 py-3 text-sm shadow-lg ${
-              t.tone === "error" ? "border-bad/30" : t.tone === "success" ? "border-good/30" : "border-paper-line"
+            className={`pointer-events-auto rounded border border-l-[3px] bg-white px-4 py-3 text-[14px] shadow-pop ${
+              t.tone === "error" ? "border-paper-line border-l-bad" : t.tone === "success" ? "border-paper-line border-l-good" : "border-paper-line border-l-ink"
             }`}
           >
             <div className="flex items-start gap-3">
-              <span
-                aria-hidden
-                className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${
-                  t.tone === "error" ? "bg-bad" : t.tone === "success" ? "bg-good" : "bg-brand"
-                }`}
-              />
               <div className="min-w-0 flex-1">
                 <p className="text-ink">{t.message}</p>
-                {t.requestId && <p className="mt-1 font-mono text-[11px] text-ink-muted">request {t.requestId}</p>}
+                {t.requestId && <p className="num mt-1 text-[12px] text-ink-muted">Request {t.requestId}</p>}
               </div>
               <button
                 type="button"

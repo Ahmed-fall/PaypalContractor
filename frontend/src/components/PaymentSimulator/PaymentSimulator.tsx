@@ -15,7 +15,7 @@ interface Props {
   initialMilestoneId?: string | null;
 }
 
-const inputCls = "w-full rounded-md border border-paper-line px-3 py-2 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20";
+const inputCls = "w-full rounded border border-paper-line bg-white px-3 py-2 text-[14px] outline-none focus:border-ink";
 
 /** Client Payment Simulator (plan WP-3.3, REQ-FE-03): run a real sandbox order + capture. */
 export function PaymentSimulator({ rows, initialMilestoneId }: Props) {
@@ -71,8 +71,8 @@ export function PaymentSimulator({ rows, initialMilestoneId }: Props) {
 
   if (rows.length === 0) {
     return (
-      <div className="rounded-xl border border-dashed border-slate-300 bg-white px-6 py-12 text-center text-sm text-ink-muted">
-        No active milestones yet. Activate a contract first.
+      <div className="rounded-lg border border-dashed border-paper-line bg-white px-6 py-12 text-center text-[14px] text-ink-muted">
+        No milestones to pay yet. Activate a contract first.
       </div>
     );
   }
@@ -81,45 +81,38 @@ export function PaymentSimulator({ rows, initialMilestoneId }: Props) {
 
   return (
     <div className="grid gap-6 lg:grid-cols-[minmax(0,420px)_minmax(0,1fr)]">
-      <div className="space-y-5 rounded-xl border border-paper-line bg-white p-5 shadow-card sm:p-6">
+      <div className="space-y-6 rounded-lg border border-paper-line bg-white p-5 sm:p-6">
         <label className="block">
-          <span className="text-xs font-medium text-ink-soft">Milestone</span>
+          <span className="text-[13px] font-medium text-ink-soft">Milestone</span>
           <select className={`${inputCls} mt-1`} value={milestoneId} onChange={(e) => setMilestoneId(e.target.value)} data-testid="sim-milestone">
             {rows.map((r) => (
               <option key={r.milestone_id} value={r.milestone_id}>
-                {r.client_name} · {r.milestone_code} · {formatMoney(r.expected_amount, r.currency)}
+                {r.client_name}, {r.milestone_code}, {formatMoney(r.expected_amount, r.currency)}
               </option>
             ))}
           </select>
         </label>
 
         {row && (
-          <div className="flex flex-wrap items-center gap-2 rounded-lg bg-paper px-3 py-2 text-xs text-ink-soft">
-            <span>
-              Due <span className="font-medium text-ink">{formatDate(row.due_date)}</span>
-            </span>
-            <span aria-hidden>·</span>
+          <div className="-mt-3 flex flex-wrap items-center gap-3 text-[13px] text-ink-soft">
+            <span>Due {formatDate(row.due_date)}</span>
             <ComplianceBadge type={row.discrepancy_type} />
           </div>
         )}
-        {alreadyPaid && <p className="text-xs text-warn">This milestone already has a capture. A new simulated payment replaces it in the demo ledger.</p>}
+        {alreadyPaid && <p className="text-[13px] text-warn">This milestone already has a payment. Sending another replaces it in the demo ledger.</p>}
 
         <fieldset>
-          <legend className="text-xs font-medium text-ink-soft">Scenario</legend>
-          <div className="mt-2 space-y-2">
+          <legend className="text-[13px] font-medium text-ink-soft">What the client pays</legend>
+          <div className="mt-2 divide-y divide-paper-rule border-y border-paper-rule">
             {SCENARIOS.map((s) => (
               <label
                 key={s.id}
-                className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2.5 transition ${
-                  scenario === s.id ? "border-brand bg-brand-soft/60 ring-1 ring-brand/30" : "border-paper-line hover:bg-paper/60"
-                }`}
+                className={`flex cursor-pointer items-start gap-3 py-3 transition-colors ${scenario === s.id ? "text-ink" : "text-ink-soft hover:text-ink"}`}
               >
-                <input type="radio" name="scenario" value={s.id} checked={scenario === s.id} onChange={() => setScenario(s.id)} className="mt-1 accent-[#0b5cff]" />
+                <input type="radio" name="scenario" value={s.id} checked={scenario === s.id} onChange={() => setScenario(s.id)} className="mt-1 accent-[#16302F]" />
                 <span>
-                  <span className="text-sm font-medium text-ink">
-                    {s.id} · {s.title}
-                  </span>
-                  <span className="block font-mono text-xs text-ink-muted">{s.describe(row)}</span>
+                  <span className="text-[14px] font-medium">{s.title}</span>
+                  <span className="num block text-[13px] text-ink-muted">{s.describe(row)}</span>
                 </span>
               </label>
             ))}
@@ -129,48 +122,48 @@ export function PaymentSimulator({ rows, initialMilestoneId }: Props) {
         {scenario === "C" && (
           <div className="grid grid-cols-[1fr_1fr_80px] gap-3">
             <label className="block">
-              <span className="text-xs font-medium text-ink-soft">Amount</span>
-              <input inputMode="decimal" className={`${inputCls} mt-1 text-right font-mono`} value={custom.amount} onChange={(e) => setCustom({ ...custom, amount: e.target.value })} />
+              <span className="text-[13px] font-medium text-ink-soft">Amount</span>
+              <input inputMode="decimal" className={`${inputCls} mt-1 text-right  num`} value={custom.amount} onChange={(e) => setCustom({ ...custom, amount: e.target.value })} />
             </label>
             <label className="block">
-              <span className="text-xs font-medium text-ink-soft">Paid on</span>
-              <input type="date" className={`${inputCls} mt-1 font-mono`} value={custom.date} onChange={(e) => setCustom({ ...custom, date: e.target.value })} />
+              <span className="text-[13px] font-medium text-ink-soft">Paid on</span>
+              <input type="date" className={`${inputCls} mt-1  num`} value={custom.date} onChange={(e) => setCustom({ ...custom, date: e.target.value })} />
             </label>
             <label className="block">
-              <span className="text-xs font-medium text-ink-soft">Currency</span>
-              <input maxLength={3} className={`${inputCls} mt-1 font-mono uppercase`} value={custom.currency} onChange={(e) => setCustom({ ...custom, currency: e.target.value.toUpperCase() })} />
+              <span className="text-[13px] font-medium text-ink-soft">Currency</span>
+              <input maxLength={3} className={`${inputCls} mt-1 num uppercase`} value={custom.currency} onChange={(e) => setCustom({ ...custom, currency: e.target.value.toUpperCase() })} />
             </label>
-            {customError && <p className="col-span-3 text-xs text-bad">{customError}</p>}
+            {customError && <p className="col-span-3 text-[13px] text-bad">{customError}</p>}
           </div>
         )}
 
         <label className="block">
-          <span className="text-xs font-medium text-ink-soft">Payer (sandbox Personal account)</span>
+          <span className="text-[13px] font-medium text-ink-soft">Paid from (sandbox personal account)</span>
           <input type="email" className={`${inputCls} mt-1`} value={payer} onChange={(e) => setPayer(e.target.value)} />
         </label>
 
         <Button className="w-full" onClick={run} disabled={busy || !row || Boolean(customError)} data-testid="sim-run">
           {busy ? (
             <>
-              <Spinner /> Capturing on PayPal…
+              <Spinner /> Paying through PayPal…
             </>
           ) : (
-            "Send simulated payment"
+            "Send payment"
           )}
         </Button>
-        <p className="text-[11px] leading-relaxed text-ink-muted">
-          Creates and captures a real PayPal sandbox order. No real money moves: the backend refuses to start against anything but the sandbox.
+        <p className="text-[12.5px] leading-relaxed text-ink-muted">
+          This creates and captures a real order in the PayPal sandbox. No real money moves: the server refuses to run against anything but the sandbox.
         </p>
       </div>
 
-      <div className="rounded-xl border border-paper-line bg-white p-5 shadow-card sm:p-6">
-        <h2 className="text-sm font-semibold text-ink">What happened</h2>
+      <div className="min-w-0 lg:pt-1">
+        <h2 className="text-[17px] font-semibold text-ink">What happened</h2>
         <div className="mt-4">
           {result ? (
             <SimulationResult res={result.res} row={result.row} />
           ) : (
-            <p className="text-sm text-ink-muted">
-              Pick a scenario and send it. You will see the PayPal capture, the audit against the contract, Leash's decision and, if allowed, the correction invoice it sent.
+            <p className="max-w-[60ch] text-[14px] leading-relaxed text-ink-muted">
+              Choose what the client pays and send it. You will see PayPal capture the money, the audit against the contract, Leash's decision and, if Leash allows it, the correction invoice it sends.
             </p>
           )}
         </div>

@@ -1,67 +1,117 @@
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/ibm-plex-sans/400-italic.css";
+@import "@fontsource/ibm-plex-sans-condensed/500.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
   color-scheme: light;
-  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
 body {
   @apply bg-paper text-ink;
   margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
 }
 
+/* Every amount on screen lines up on its digits. */
+.num,
 .tabular {
-  font-variant-numeric: tabular-nums;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
 }
 
-/* AG Grid Community, Quartz theme, tuned to the app's ink-on-paper palette. */
+:focus-visible {
+  outline: 2px solid #16302f;
+  outline-offset: 2px;
+}
+
+/* Highlighter: the only decorative mark, used for cited clauses and money owed. */
+.hl {
+  background: linear-gradient(transparent 12%, #f3df6b 12%, #f3df6b 88%, transparent 88%);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  padding: 0 0.15em;
+}
+
+/* Clauses get a lighter wash so the amount owed stays the strongest mark. */
+.hl-soft {
+  background: linear-gradient(transparent 8%, #fbf3c4 8%, #fbf3c4 92%, transparent 92%);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  padding: 0 0.12em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* AG Grid Community, Quartz theme, tuned to the working-file palette. */
 .ag-theme-quartz.fd-grid {
-  --ag-font-family: Inter, ui-sans-serif, system-ui, sans-serif;
-  --ag-font-size: 13px;
-  --ag-foreground-color: #0f172a;
-  --ag-secondary-foreground-color: #475569;
-  --ag-header-foreground-color: #475569;
-  --ag-header-background-color: #f8fafc;
+  --ag-font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --ag-font-size: 13.5px;
+  --ag-foreground-color: #16302f;
+  --ag-secondary-foreground-color: #3e5654;
+  --ag-header-foreground-color: #3e5654;
+  --ag-header-background-color: #ffffff;
   --ag-background-color: #ffffff;
   --ag-odd-row-background-color: #ffffff;
-  --ag-row-hover-color: #f1f5ff;
-  --ag-selected-row-background-color: #e8efff;
-  --ag-border-color: #e2e8f0;
-  --ag-row-border-color: #eef2f7;
+  --ag-row-hover-color: #f6f8f7;
+  --ag-selected-row-background-color: #e3ecea;
+  --ag-border-color: #d9dedc;
+  --ag-row-border-color: #e8ecea;
   --ag-header-column-separator-display: none;
-  --ag-active-color: #0b5cff;
-  --ag-input-focus-border-color: #0b5cff;
-  --ag-wrapper-border-radius: 12px;
-  --ag-border-radius: 6px;
+  --ag-active-color: #16302f;
+  --ag-input-focus-border-color: #16302f;
+  --ag-wrapper-border-radius: 6px;
+  --ag-border-radius: 4px;
   --ag-cell-horizontal-padding: 14px;
   --ag-grid-size: 7px;
 }
 
+.fd-grid .ag-header {
+  border-bottom: 1px solid #16302f;
+}
+
 .fd-grid .ag-header-cell-label {
-  font-weight: 600;
-  font-size: 11.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  font-family: "IBM Plex Sans Condensed", "IBM Plex Sans", sans-serif;
+  font-weight: 500;
+  font-size: 13px;
+  color: #3e5654;
 }
 
 .fd-grid .num {
-  font-family: "JetBrains Mono", ui-monospace, monospace;
-  font-variant-numeric: tabular-nums;
-  font-size: 12.5px;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}
+
+/* The totals line reads like the foot of a ledger page: a double rule above it. */
+.fd-grid .ag-floating-bottom {
+  border-top: 3px double #16302f;
 }
 
 .fd-grid .ag-row-pinned {
   font-weight: 600;
-  background: #f8fafc;
+  background: #ffffff;
 }
 
-.fd-grid .ag-floating-bottom {
-  border-top: 2px solid #cbd5e1;
+/* A red mark in the margin beside rows that need the owner. */
+.fd-grid .fd-flag {
+  box-shadow: inset 3px 0 0 #b3261e;
 }
 
 .fd-grid .fd-detail-row {
-  background: #fbfcfe;
+  background: #f6f8f7;
 }

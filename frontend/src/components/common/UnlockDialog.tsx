@@ -32,25 +32,25 @@ export function UnlockDialog({ open, onClose }: { open: boolean; onClose: () => 
       onClose={onClose}
       width="sm"
       title="Unlock owner actions"
-      subtitle="Reading is open. Uploading, paying and sending need the owner key."
+      subtitle="Anyone can look around. Uploading, paying and sending invoices need the owner key."
     >
       <form onSubmit={submit} className="space-y-4">
-        {reason && <p className="rounded-md bg-warn-soft px-3 py-2 text-sm text-warn">{reason}</p>}
+        {reason && <p className="border-l-[3px] border-warn py-1 pl-3 text-[14px] text-warn">{reason}</p>}
         <label className="block text-sm">
-          <span className="font-medium text-ink">Owner key</span>
+          <span className="text-[13px] font-medium text-ink-soft">Owner key</span>
           <input
             data-autofocus
             type="password"
             autoComplete="off"
             value={value}
             onChange={(e) => setValue(e.target.value)}
-            className="mt-1.5 w-full rounded-md border border-paper-line px-3 py-2 font-mono text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
-            placeholder="From the README or Devpost testing notes"
+            className="mt-1.5 w-full rounded border border-paper-line px-3 py-2 text-[14px] outline-none focus:border-ink"
+            placeholder="It is in the README and the Devpost testing notes"
           />
         </label>
-        <p className="text-xs text-ink-muted">
-          Kept in this browser tab only and sent as the <code className="font-mono">X-Demo-Key</code> header.
-          {apiConfig.useMocks && " Mock mode accepts any value."}
+        <p className="text-[13px] text-ink-muted">
+          Kept in this browser tab only and sent as the <code>X-Demo-Key</code> header.
+          {apiConfig.useMocks && " With sample data, any value works."}
         </p>
         <div className="flex justify-end gap-2">
           {getDemoKey() && (

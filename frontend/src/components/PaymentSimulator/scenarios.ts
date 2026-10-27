@@ -1,6 +1,6 @@
 import type { LedgerRow, SimulatorPaymentRequest } from "../../types/contracts";
-import { addDays } from "../../lib/dates";
-import { centsToString, toCents } from "../../lib/money";
+import { addDays, formatDate } from "../../lib/dates";
+import { centsToString, formatMoney, toCents } from "../../lib/money";
 
 export type ScenarioId = "A" | "B" | "C";
 
@@ -13,15 +13,15 @@ export interface CustomInputs {
 export const SCENARIOS: { id: ScenarioId; title: string; describe: (r: LedgerRow | null) => string }[] = [
   {
     id: "A",
-    title: "Pay in full, on time",
-    describe: (r) => (r ? `${r.expected_amount} ${r.currency} on ${r.due_date}` : "Full amount on the due date"),
+    title: "The full amount, on time",
+    describe: (r) => (r ? `${formatMoney(r.expected_amount, r.currency)} on ${formatDate(r.due_date)}` : "Full amount on the due date"),
   },
   {
     id: "B",
-    title: "Underpay, five days late",
-    describe: (r) => (r ? `${underpay(r)} ${r.currency} on ${addDays(r.due_date, 5)}` : "85% of the amount, 5 days after the due date"),
+    title: "Too little, five days late",
+    describe: (r) => (r ? `${formatMoney(underpay(r), r.currency)} on ${formatDate(addDays(r.due_date, 5))}` : "85% of the amount, 5 days after the due date"),
   },
-  { id: "C", title: "Custom", describe: () => "Pick the amount, date and currency" },
+  { id: "C", title: "Something else", describe: () => "Set the amount, date and currency" },
 ];
 
 /** Scenario B: the $1,000 milestone pays $850, i.e. 85% (rounded to whole cents). */

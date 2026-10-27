@@ -49,8 +49,8 @@ export function UploadPanel({ busy, error, onSubmit, samples = [] }: Props) {
   const shown = localError ?? error;
 
   return (
-    <div className="rounded-xl border border-paper-line bg-white p-5 shadow-card sm:p-6">
-      <div className="mb-4 flex gap-1 rounded-lg bg-paper p-1 text-sm" role="tablist">
+    <div className="rounded-lg border border-paper-line bg-white p-5 sm:p-7">
+      <div className="mb-5 flex gap-6 border-b border-paper-line text-[14px]" role="tablist">
         {(["file", "text"] as const).map((m) => (
           <button
             key={m}
@@ -58,7 +58,7 @@ export function UploadPanel({ busy, error, onSubmit, samples = [] }: Props) {
             role="tab"
             aria-selected={mode === m}
             onClick={() => setMode(m)}
-            className={`flex-1 rounded-md px-3 py-1.5 font-medium transition ${mode === m ? "bg-white text-ink shadow-card" : "text-ink-muted hover:text-ink"}`}
+            className={`-mb-px border-b-2 pb-2 transition-colors ${mode === m ? "border-ink font-medium text-ink" : "border-transparent text-ink-muted hover:text-ink"}`}
           >
             {m === "file" ? "Upload file" : "Paste text"}
           </button>
@@ -81,22 +81,22 @@ export function UploadPanel({ busy, error, onSubmit, samples = [] }: Props) {
           tabIndex={0}
           aria-label="Upload a contract"
           className={`flex min-h-[220px] cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed px-6 text-center transition ${
-            drag ? "border-brand bg-brand-soft" : "border-slate-300 hover:border-slate-400 hover:bg-paper/60"
+            drag ? "border-ink bg-paper" : "border-paper-line hover:border-ink-muted"
           } ${busy ? "pointer-events-none opacity-70" : ""}`}
         >
           {busy ? (
             <div className="flex flex-col items-center gap-3 text-ink-soft">
-              <Spinner className="h-6 w-6 text-brand" />
-              <p className="text-sm font-medium">Reading the contract and extracting payment rules…</p>
+              <Spinner className="h-6 w-6 text-ink" />
+              <p className="text-[14px] font-medium">Reading the payment clauses…</p>
             </div>
           ) : (
             <>
-              <svg aria-hidden viewBox="0 0 24 24" className="h-10 w-10 text-slate-400" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <svg aria-hidden viewBox="0 0 24 24" className="h-9 w-9 text-ink-muted" fill="none" stroke="currentColor" strokeWidth="1.5">
                 <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
                 <path d="M14 3v5h5M12 18v-6M9 15l3-3 3 3" />
               </svg>
-              <p className="mt-3 text-sm font-medium text-ink">Drop a signed contract here, or click to choose</p>
-              <p className="mt-1 text-xs text-ink-muted">PDF, Markdown or text, up to 5 MB</p>
+              <p className="mt-3 text-[15px] font-medium text-ink">Drop the signed contract here, or choose a file</p>
+              <p className="mt-1 text-[13px] text-ink-muted">PDF, Markdown or plain text, up to 5 MB</p>
             </>
           )}
           <input
@@ -117,7 +117,7 @@ export function UploadPanel({ busy, error, onSubmit, samples = [] }: Props) {
             onChange={(e) => setText(e.target.value)}
             rows={9}
             placeholder="Paste the contract text…"
-            className="w-full rounded-lg border border-paper-line p-3 font-mono text-xs outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
+            className="w-full rounded border border-paper-line p-3 text-[13px] leading-relaxed outline-none focus:border-ink"
           />
           <div className="flex justify-end">
             <Button disabled={busy || !text.trim()} onClick={() => onSubmit({ rawText: text })}>
@@ -128,16 +128,14 @@ export function UploadPanel({ busy, error, onSubmit, samples = [] }: Props) {
       )}
 
       {shown && (
-        <p role="alert" className="mt-4 rounded-md bg-bad-soft px-3 py-2 text-sm text-bad">
+        <p role="alert" className="mt-4 border-l-[3px] border-bad py-1 pl-3 text-[14px] text-bad">
           {shown}
         </p>
       )}
 
       {samples.length > 0 && (
         <div className="mt-5 border-t border-paper-line pt-4">
-          <p className="text-xs font-medium text-ink-muted">
-            {apiConfig.useMocks ? "Sample contracts (mock mode)" : "Sample contracts"}
-          </p>
+          <p className="text-[13px] text-ink-muted">{apiConfig.useMocks ? "Or try one of the sample contracts" : "Sample contracts"}</p>
           <div className="mt-2 flex flex-wrap gap-2">
             {samples.map((s) => (
               <Button

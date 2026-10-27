@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import { AgGridReact } from "ag-grid-react";
-import type { ColDef, GetRowIdParams, GridApi, IsFullWidthRowParams, RowClassParams, RowHeightParams } from "ag-grid-community";
+import type { ColDef, GetRowIdParams, GridApi, IsFullWidthRowParams, RowHeightParams } from "ag-grid-community";
 import type { LedgerRow, MarginResponse } from "../../types/contracts";
 import { computeTotals, joinMargin, matchesStatus, type GridRow, type StatusFilter, type TotalsRow } from "./model";
 import {
@@ -32,11 +32,11 @@ interface Props {
 
 const FILTERS: { id: StatusFilter; label: string }[] = [
   { id: "all", label: "All" },
-  { id: "action", label: "Needs action" },
-  { id: "owed", label: "Money owed" },
+  { id: "action", label: "Needs you" },
+  { id: "owed", label: "Owed" },
   { id: "sent", label: "Invoiced" },
-  { id: "compliant", label: "Compliant" },
-  { id: "unpaid", label: "Awaiting payment" },
+  { id: "compliant", label: "Paid in full" },
+  { id: "unpaid", label: "Not paid yet" },
 ];
 
 const num = { cellClass: "num", headerClass: "ag-right-aligned-header", type: "rightAligned" } as const;
@@ -88,7 +88,13 @@ export function ReconciliationGrid({ rows, margin, loading, onOpenRemediation }:
 
   const colDefs = useMemo<ColDef<Row>[]>(
     () => [
-      { colId: "expand", headerName: "", width: 52, pinned: left, cellRenderer: ExpandCell, sortable: false, resizable: false, suppressMovable: true },
+      {
+        colId: "expand",
+        headerName: "",
+        width: 52,
+        pinned: left,
+        cellClassRules: { "fd-flag": (p) => Boolean(p.data && !isTotals(p.data) && !p.data.__detailFor && (p.data.discrepancy_status === "PENDING_APPROVAL" || p.data.discrepancy_status === "BLOCKED")) },
+        cellRenderer: ExpandCell, sortable: false, resizable: false, suppressMovable: true },
       {
         colId: "milestone",
         headerName: "Milestone",
@@ -100,13 +106,13 @@ export function ReconciliationGrid({ rows, margin, loading, onOpenRemediation }:
       },
       {
         colId: "client",
-        headerName: "Client & Contract",
+        headerName: "Client and contract",
         width: 250,
         valueGetter: (p) => (p.data && !isTotals(p.data) ? p.data.client_name : ""),
         cellRenderer: ClientCell,
         getQuickFilterText: (p) => (p.data && !isTotals(p.data) ? `${p.data.client_name} ${p.data.contract_title}` : ""),
       },
-      { colId: "due", headerName: "Due Date", field: "due_date" as never, width: 130, cellRenderer: DueCell },
+      { colId: "due", headerName: "Due", field: "due_date" as never, width: 130, cellRenderer: DueCell },
       { colId: "expected", headerName: "Expected", width: 128, ...num, valueGetter: (p) => p.data?.expected_amount, comparator: moneyCompare, cellRenderer: moneyCell("expected_amount") },
       { colId: "captured", headerName: "Captured", width: 128, ...num, valueGetter: (p) => p.data?.captured_amount, comparator: moneyCompare, cellRenderer: moneyCell("captured_amount") },
       {
@@ -129,7 +135,7 @@ export function ReconciliationGrid({ rows, margin, loading, onOpenRemediation }:
       },
       {
         colId: "owed",
-        headerName: "Total Owed",
+        headerName: "Owed",
         width: 128,
         ...num,
         valueGetter: (p) => p.data?.total_remediation_amount,
@@ -138,15 +144,15 @@ export function ReconciliationGrid({ rows, margin, loading, onOpenRemediation }:
       },
       {
         colId: "capture",
-        headerName: "PayPal Capture ID",
+        headerName: "PayPal capture",
         width: 200,
         valueGetter: (p) => (p.data && !isTotals(p.data) ? p.data.paypal_capture_id : ""),
         cellRenderer: CaptureCell,
       },
       {
         colId: "status",
-        headerName: "Compliance Status",
-        width: 270,
+        headerName: "Audit result",
+        width: 200,
         valueGetter: (p) => (p.data && !isTotals(p.data) ? (p.data.discrepancy_type ?? "") : ""),
         cellRenderer: StatusCell,
         getQuickFilterText: (p) =>
@@ -169,7 +175,7 @@ export function ReconciliationGrid({ rows, margin, loading, onOpenRemediation }:
         valueGetter: (p) => (p.data && !isTotals(p.data) ? p.data.payroll_status : ""),
         cellRenderer: PayrollCell,
       },
-      { colId: "action", headerName: "Action", width: 136, pinned: right, cellRenderer: ActionCell, sortable: false, resizable: false, suppressMovable: true },
+      { colId: "action", headerName: "", width: 136, pinned: right, cellRenderer: ActionCell, sortable: false, resizable: false, suppressMovable: true },
     ],
     [left, right],
   );
@@ -193,34 +199,34 @@ export function ReconciliationGrid({ rows, margin, loading, onOpenRemediation }:
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap gap-1.5" role="group" aria-label="Filter by status">
+      <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
+        <div className="flex flex-wrap items-stretch gap-x-5 gap-y-1 border-b border-paper-line" role="group" aria-label="Filter by status">
           {FILTERS.map((f) => (
             <button
               key={f.id}
               type="button"
               aria-pressed={status === f.id}
               onClick={() => setStatus(f.id)}
-              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium ring-1 ring-inset transition ${
-                status === f.id ? "bg-ink text-white ring-ink" : "bg-white text-ink-soft ring-paper-line hover:bg-paper"
+              className={`-mb-px flex items-baseline gap-1.5 border-b-2 pb-2 text-[14px] transition-colors ${
+                status === f.id ? "border-ink font-medium text-ink" : "border-transparent text-ink-muted hover:text-ink"
               }`}
             >
               {f.label}
-              <span className={`num rounded-full px-1.5 text-[10px] ${status === f.id ? "bg-white/20" : "bg-slate-100 text-ink-muted"}`}>{counts[f.id]}</span>
+              <span className="num text-[12px] text-ink-muted">{counts[f.id]}</span>
             </button>
           ))}
         </div>
         <label className="relative w-full sm:w-72">
           <span className="sr-only">Search the ledger</span>
-          <svg aria-hidden viewBox="0 0 20 20" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-muted" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <svg aria-hidden viewBox="0 0 20 20" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-muted" fill="none" stroke="currentColor" strokeWidth="1.6">
             <circle cx="9" cy="9" r="5.5" />
             <path d="m13.5 13.5 3 3" strokeLinecap="round" />
           </svg>
           <input
             value={quick}
             onChange={(e) => setQuick(e.target.value)}
-            placeholder="Search client, milestone, capture ID…"
-            className="h-9 w-full rounded-md border border-paper-line bg-white pl-9 pr-3 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
+            placeholder="Find a client, milestone or capture"
+            className="h-9 w-full rounded border border-paper-line bg-white pl-9 pr-3 text-[14px] outline-none placeholder:text-ink-muted focus:border-ink"
           />
         </label>
       </div>
@@ -245,7 +251,6 @@ export function ReconciliationGrid({ rows, margin, loading, onOpenRemediation }:
             if (!d || isTotals(d)) return true;
             return matchesStatus(d, status);
           }}
-          getRowClass={(p: RowClassParams<Row>) => (p.data && !isTotals(p.data) && p.data.discrepancy_status === "PENDING_APPROVAL" ? "fd-needs-action" : undefined)}
           onGridReady={(e) => {
             apiRef.current = e.api;
             recomputeTotals();
@@ -268,7 +273,7 @@ export function ReconciliationGrid({ rows, margin, loading, onOpenRemediation }:
           loading={loading}
           suppressCellFocus
           animateRows
-          overlayNoRowsTemplate="<span class='text-sm text-slate-500'>No milestones match. Activate a contract to start auditing.</span>"
+          overlayNoRowsTemplate="<span style='color:#6b7f7c;font-size:14px'>No milestones here. Activate a contract to start auditing its payments.</span>"
         />
       </div>
     </div>

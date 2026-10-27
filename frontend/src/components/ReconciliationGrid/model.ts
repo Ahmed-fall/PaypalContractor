@@ -60,7 +60,7 @@ export function computeTotals(rows: GridRow[]): TotalsRow {
   return {
     __key: "__totals",
     __totals: true,
-    milestone_code: `Total · ${rows.length} milestone${rows.length === 1 ? "" : "s"}`,
+    milestone_code: `Totals, ${rows.length} milestone${rows.length === 1 ? "" : "s"}`,
     currency: currencies.size === 1 ? [...currencies][0] : "USD",
     expected_amount: sum((r) => r.expected_amount),
     // Foreign-currency captures are excluded, matching the API's total_captured.
