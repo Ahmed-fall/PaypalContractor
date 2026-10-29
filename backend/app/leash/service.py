@@ -2,6 +2,8 @@
 
 The decision always comes from ``evaluate_rules``. The explainer only supplies the
 ``reason`` text; any failure, timeout or unusable output falls back to the template.
+Only payroll Ask/Deny asks the explainer for the LLM (``use_llm=True``); the invoice
+guard (hook H1) and payroll Allow get its instant template.
 Exactly one record is appended per call, and the log has no way to change or remove
 a row once written.
 """
@@ -12,7 +14,7 @@ import asyncio
 import importlib
 import importlib.util
 import math
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -25,9 +27,20 @@ from .explain import MAX_REASON_LEN, template_reason
 from .guard import evaluate_rules, parse_money
 from .policy import default_policy
 
-Explainer = Callable[
-    [GuardAction, LeashDecision, list[str], dict[str, Any]], Awaitable[str]
-]
+
+class Explainer(Protocol):
+    """P2's ``explain_decision`` (Interface 3)."""
+
+    async def __call__(
+        self,
+        action: GuardAction,
+        decision: LeashDecision,
+        rule_ids: list[str],
+        facts: dict[str, Any],
+        *,
+        use_llm: bool,
+    ) -> str: ...
+
 
 SubjectType = Literal["discrepancy", "payroll_line", "payroll_run"]
 
@@ -36,6 +49,10 @@ SUBJECT_TYPES: dict[GuardAction, SubjectType] = {
     GuardAction.PAY_TEAM_MEMBER: "payroll_line",
     GuardAction.SEND_PAYROLL_BATCH: "payroll_run",
 }
+# Only these actions' Ask/Deny decisions are worth an LLM explanation.
+PAYROLL_ACTIONS: frozenset[GuardAction] = frozenset(
+    {GuardAction.PAY_TEAM_MEMBER, GuardAction.SEND_PAYROLL_BATCH}
+)
 EXPLAIN_TIMEOUT_S = 3.0
 
 
@@ -129,9 +146,16 @@ class LeashService:
         fallback = template_reason(action, decision, rule_ids, snapshot)
         if self._explainer is None:
             return fallback
+        use_llm = action in PAYROLL_ACTIONS and decision != LeashDecision.ALLOW
         try:
             text = await asyncio.wait_for(
-                self._explainer(action, decision, list(rule_ids), _json_safe(snapshot)),
+                self._explainer(
+                    action,
+                    decision,
+                    list(rule_ids),
+                    _json_safe(snapshot),
+                    use_llm=use_llm,
+                ),
                 self._timeout,
             )
         except Exception:  # noqa: BLE001 - any explainer failure uses the template

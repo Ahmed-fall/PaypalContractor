@@ -119,3 +119,126 @@ def test_template_never_contradicts_decision(
     text = reason(decision, ids, facts)
     assert text == expected
     assert "above your auto-send limit" not in text
+
+
+PAY = GuardAction.PAY_TEAM_MEMBER
+BATCH = GuardAction.SEND_PAYROLL_BATCH
+PAYROLL_SENTENCES: list[tuple[GuardAction, LeashDecision, str, str]] = [
+    (
+        PAY,
+        LeashDecision.ASK,
+        "PR-01",
+        (
+            "This team member's payout email changed recently. "
+            "Confirm it with them before paying."
+        ),
+    ),
+    (
+        PAY,
+        LeashDecision.ASK,
+        "PR-02",
+        (
+            "The hours on this line are more than one person can work. "
+            "Check the timesheet before paying."
+        ),
+    ),
+    (
+        PAY,
+        LeashDecision.DENY,
+        "PR-02",
+        "The hours on this line are zero or negative, so it can't be paid.",
+    ),
+    (
+        PAY,
+        LeashDecision.ASK,
+        "PR-03",
+        (
+            "This is the first payment to this team member. "
+            "Check their details before paying."
+        ),
+    ),
+    (
+        PAY,
+        LeashDecision.ASK,
+        "PR-04",
+        (
+            "The rate in the timesheet doesn't match the roster, so the roster rate "
+            "is used. Review it before paying."
+        ),
+    ),
+    (
+        PAY,
+        LeashDecision.DENY,
+        "PR-05",
+        (
+            "This person isn't in the roster or appears more than once, "
+            "so they can't be paid."
+        ),
+    ),
+    (
+        BATCH,
+        LeashDecision.ASK,
+        "PR-06",
+        (
+            "This payroll run is above your margin limit for the cash received. "
+            "Review it before sending."
+        ),
+    ),
+    (
+        PAY,
+        LeashDecision.DENY,
+        "PR-07",
+        (
+            "This team member was already paid for this milestone, "
+            "so they can't be paid again."
+        ),
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("action", "decision", "rule_id", "expected"), PAYROLL_SENTENCES
+)
+def test_template_payroll_rules(
+    action: GuardAction, decision: LeashDecision, rule_id: str, expected: str
+) -> None:
+    text = template_reason(action, decision, [rule_id], {"amount": "450.00"})
+    assert text == expected
+    assert rule_id not in text
+    assert not re.search(r"\d", text)
+
+
+def test_template_pr02_follows_the_decision() -> None:
+    ask = template_reason(PAY, LeashDecision.ASK, ["PR-02"], {})
+    deny = template_reason(PAY, LeashDecision.DENY, ["PR-02"], {})
+    assert "more than one person can work" in ask
+    assert "zero or negative" in deny
+    assert template_reason(PAY, LeashDecision.ALLOW, ["PR-02"], {}) == ALLOW_DEFAULT
+
+
+@pytest.mark.parametrize(
+    ("decision", "rule_id"),
+    [
+        (LeashDecision.DENY, "PR-01"),
+        (LeashDecision.ALLOW, "PR-03"),
+        (LeashDecision.ASK, "PR-05"),
+        (LeashDecision.DENY, "PR-06"),
+        (LeashDecision.ASK, "PR-07"),
+    ],
+)
+def test_template_payroll_never_contradicts_decision(
+    decision: LeashDecision, rule_id: str
+) -> None:
+    defaults = {
+        LeashDecision.ALLOW: ALLOW_DEFAULT,
+        LeashDecision.ASK: DEFAULT,
+        LeashDecision.DENY: DENY_DEFAULT,
+    }
+    assert template_reason(PAY, decision, [rule_id], {}) == defaults[decision]
+
+
+@pytest.mark.parametrize("decision", list(LeashDecision))
+def test_template_all_ids_at_once_max_200_chars(decision: LeashDecision) -> None:
+    ids = [f"G-0{i}" for i in range(1, 6)] + [f"PR-0{i}" for i in range(1, 8)]
+    text = template_reason(PAY, decision, ids, {"amount": "200.00"})
+    assert 0 < len(text) <= 200
