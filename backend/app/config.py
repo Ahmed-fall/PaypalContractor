@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     payouts_poll_max_seconds: int = Field(default=120, gt=0)
     seed_demo_data: bool = False
     log_level: str = "INFO"
+    # Public PayPal sandbox test card, so /simulator/pay can capture server-side
+    # without a browser approval popup. Override per environment if needed.
+    simulator_card_number: str = "4032038441061188"
+    simulator_card_expiry: str = "2030-12"
+    simulator_card_csc: str = "123"
 
     @field_validator("paypal_api_base_url")
     @classmethod
