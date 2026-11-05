@@ -776,7 +776,8 @@ def recompute_run_status(run_id: str) -> PayrollRunOut:
             ]
             if run.batch_status == "DENIED":
                 for ln in sent:
-                    ln.payout_status = "FAILED"
+                    if ln.payout_status == "PENDING":  # money already out is never un-paid
+                        ln.payout_status = "FAILED"
                 run.status = "FAILED"
             elif sent:
                 statuses = {ln.payout_status for ln in sent}
