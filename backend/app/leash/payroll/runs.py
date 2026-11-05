@@ -54,6 +54,7 @@ from ...schemas.contracts import (
     TimesheetMappingRequired,
     TimesheetParsed,
 )
+from ..guard import DEFAULT_RULE_ID, PAYROLL_CHECKS_RULE_ID
 from ..models import (
     LeashDecisionRow,
     PayrollLineRow,
@@ -96,7 +97,19 @@ _CENT = Decimal("0.01")
 _ZERO = Decimal("0.00")
 _ERROR_STATUS = {"FILE_TOO_LARGE": 413, "UNSUPPORTED_FILE_TYPE": 415, "TIMESHEET_INVALID": 422}
 
+_PLACEHOLDER_IDS = frozenset({DEFAULT_RULE_ID, PAYROLL_CHECKS_RULE_ID})
+
 _tasks: set[asyncio.Task[Any]] = set()
+
+
+def _visible_ids(*groups: Any) -> list[str]:
+    """Deduplicated PR flags and policy rule ids, without the guard's placeholders."""
+    seen: dict[str, None] = {}
+    for group in groups:
+        for item in group:
+            if str(item) not in _PLACEHOLDER_IDS:
+                seen[str(item)] = None
+    return list(seen)
 
 
 def _money(value: Decimal) -> str:
@@ -556,15 +569,15 @@ async def _check_run_locked(run_id: str) -> PayrollRunOut:
     open_ask = False
     for ln, result in zip(inputs.lines, line_results, strict=True):
         reason = None if result.decision == LeashDecision.ALLOW else result.reason
-        outcome[ln.line_id] = (
-            result.decision,
-            result.decision_id,
-            checks[ln.line_id].flags,
-            reason,
-        )
+        shown = checks[ln.line_id].flags
+        if result.decision == LeashDecision.ASK:  # policy-only ASKs say why they wait
+            shown = tuple(_visible_ids(shown, result.rule_ids))
+        outcome[ln.line_id] = (result.decision, result.decision_id, shown, reason)
         if result.decision == LeashDecision.ASK and ln.owner_action is None:
             open_ask = True
-    run_open = bool(ordered_flags) and not inputs.approved
+    # A policy rule on SEND_PAYROLL_BATCH can raise the run to ASK on its own: it is as open
+    # as a PR flag until the owner approves the run.
+    run_open = run_result.decision == LeashDecision.ASK and not inputs.approved
     status = "AWAITING_APPROVAL" if open_ask or run_open else "CHECKED"
     await asyncio.to_thread(
         _persist_check,
@@ -591,7 +604,8 @@ def _run_out(db: Session, run: PayrollRunRow) -> PayrollRunOut:
         if drow is not None:
             decision = LeashDecision(drow.decision)
             check = drow.facts_json.get("payroll_check", {})
-            flags = [str(f) for f in check.get("flags", [])]
+            rule_ids = drow.rule_ids_json if decision != LeashDecision.ALLOW else []
+            flags = _visible_ids(check.get("flags", []), rule_ids)
     lines: list[PayrollLineOut] = []
     members: dict[str, TeamMemberRow] = {}
     for row in db.scalars(select(PayrollLineRow).where(PayrollLineRow.run_id == run.id)):

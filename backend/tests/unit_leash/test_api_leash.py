@@ -764,3 +764,104 @@ def test_failed_resume_is_retried(ctx: Ctx, monkeypatch: pytest.MonkeyPatch) -> 
     assert ctx.get("/team").status_code == 200
     assert ctx.get("/team").status_code == 200
     assert len(calls) == 2
+
+
+# --- final-review fixes ---------------------------------------------------------------------
+
+
+def _activate_rule(ctx: Ctx, rule: dict[str, Any]) -> None:
+    policy = ctx.get("/policy").json()
+    body = {
+        "version": policy["version"],
+        "payroll_margin_limit_pct": policy["payroll_margin_limit_pct"],
+        "email_change_window_days": policy["email_change_window_days"],
+        "rules": [rule],
+    }
+    r = ctx.post("/policy", json=body)
+    assert r.status_code == 200, r.text
+    version = r.json()["draft_version"]
+    assert ctx.post("/policy/activate", json={"version": version}).status_code == 200
+
+
+def _send(ctx: Ctx, run_id: str, flags: list[str], key: str = "k") -> httpx.Response:
+    return ctx.post(
+        f"/payroll/runs/{run_id}/send",
+        json={"confirm": True, "approve_run_flags": flags, "idempotency_key": key},
+    )
+
+
+@respx.mock
+def test_run_level_policy_ask_blocks_send_until_approved(ctx: Ctx) -> None:
+    route = respx.post(PAYOUTS_URL).mock(return_value=_created())
+    _activate_rule(
+        ctx,
+        {
+            "id": "R-RUN",
+            "applies_to": "SEND_PAYROLL_BATCH",
+            "when": {"amount_gt": "300.00"},
+            "outcome": "ASK",
+            "source_text": "ask me for big payroll",
+        },
+    )
+    run = _create_run(ctx)
+    omar = _line(run, "Omar")
+    after = ctx.patch(
+        f"/payroll/runs/{run['run_id']}/lines/{omar['line_id']}", json={"owner_action": "EXCLUDED"}
+    ).json()
+    assert after["run_decision"] == "ASK"
+    assert after["run_flags"] == ["R-RUN"]
+    assert after["status"] == "AWAITING_APPROVAL"
+
+    blocked = _send(ctx, run["run_id"], [])
+    assert blocked.status_code == 409, blocked.text
+    error = blocked.json()["error"]
+    assert error["code"] == "LEASH_ASK_UNRESOLVED"
+    assert error["details"]["open_run_flags"] == ["R-RUN"]
+    assert route.call_count == 0
+
+    ok = _send(ctx, run["run_id"], ["R-RUN"])
+    assert ok.status_code == 202, ok.text
+    assert route.call_count == 1
+
+
+@respx.mock
+def test_run_deny_policy_stays_denied(ctx: Ctx) -> None:
+    route = respx.post(PAYOUTS_URL).mock(return_value=_created())
+    _activate_rule(
+        ctx,
+        {
+            "id": "R-NO",
+            "applies_to": "SEND_PAYROLL_BATCH",
+            "when": {"amount_gt": "300.00"},
+            "outcome": "DENY",
+            "source_text": "never pay that much",
+        },
+    )
+    run = _create_run(ctx)
+    r = _send(ctx, run["run_id"], ["PR-06", "R-NO"])
+    assert r.status_code == 409
+    assert r.json()["error"]["code"] == "LEASH_DENIED"
+    assert route.call_count == 0
+
+
+@respx.mock
+def test_policy_only_line_ask_shows_rule_id(ctx: Ctx) -> None:
+    respx.post(PAYOUTS_URL).mock(return_value=_created())
+    _activate_rule(
+        ctx,
+        {
+            "id": "R-LINE",
+            "applies_to": "PAY_TEAM_MEMBER",
+            "when": {"amount_gt": "210.00"},
+            "outcome": "ASK",
+            "source_text": "ask me for pay over 210",
+        },
+    )
+    run = _create_run(ctx)
+    sara = _line(run, "Sara")  # 220.00, no payroll flag
+    assert sara["decision"] == "ASK"
+    assert sara["flags"] == ["R-LINE"]
+    blocked = _send(ctx, run["run_id"], ["PR-06"])
+    assert blocked.status_code == 409
+    asks = blocked.json()["error"]["details"]["open_asks"]
+    assert {"line_id": sara["line_id"], "flags": ["R-LINE"]} in asks
