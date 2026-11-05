@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { api, isApiError, request } from "../../api/client";
+import { api, isApiError } from "../../api/client";
 import { Button } from "../common/Button";
 import { Card, PageHeader } from "../common/Card";
 import { Pill } from "../common/StatusBadge";
 import { formatDateTime } from "../../lib/dates";
 import type { ActiveLeashPolicy, LeashPolicy, PolicyCompileResponse } from "../../types/contracts";
-import { savePolicyDraft } from "./api";
+import { activatePolicyQuiet, compilePolicyQuiet, savePolicyDraft } from "./api";
 import {
   describeRule,
   formFromPolicy,
@@ -32,7 +32,9 @@ function serverFieldErrors(e: unknown): { fields: RulesFormErrors; general: stri
   let general: string | null = null;
   if (Array.isArray(list)) {
     for (const item of list as Array<{ field?: string; msg?: string }>) {
-      const target = item.field ? SERVER_FIELD[item.field] : undefined;
+      // Field names can arrive as "body.payroll_margin_limit_pct"; match on the last dotted segment.
+      const last = item.field?.split(".").pop();
+      const target = last ? SERVER_FIELD[last] : undefined;
       if (target) fields[target] = item.msg ?? e.message;
       else general = item.msg ?? e.message;
     }
@@ -41,9 +43,17 @@ function serverFieldErrors(e: unknown): { fields: RulesFormErrors; general: stri
   return { fields, general };
 }
 
-function RuleCards({ policy }: { policy: LeashPolicy }) {
+/** Plain words for the 409s activation can answer with. */
+function activateMessage(e: unknown): string {
+  if (!isApiError(e)) return "Something went wrong. Try again.";
+  if (e.code === "POLICY_VERSION_CONFLICT") return "Another version was just activated. Reload to see it.";
+  if (e.code === "POLICY_DRAFT_NOT_FOUND") return "That draft is gone. Preview again.";
+  return e.message;
+}
+
+function RuleCards({ policy, label = "Rule cards" }: { policy: LeashPolicy; label?: string }) {
   return (
-    <ul className="flex flex-col gap-2" aria-label="Rule cards">
+    <ul className="flex flex-col gap-2" aria-label={label}>
       {policy.rules.map((rule) => (
         <li key={rule.id} className="flex items-start gap-3 rounded border border-paper-rule bg-paper px-4 py-3 text-[14px] text-ink">
           <span className="num mt-0.5 shrink-0 text-[12px] font-semibold text-ink-muted">{rule.id}</span>
@@ -60,16 +70,45 @@ function RuleCards({ policy }: { policy: LeashPolicy }) {
   );
 }
 
-function Field({ id, label, hint, error, children }: { id: string; label: string; hint?: string; error?: string; children: React.ReactNode }) {
+function Field({
+  id,
+  label,
+  hint,
+  error,
+  value,
+  onChange,
+  inputMode,
+}: {
+  id: string;
+  label: string;
+  hint?: string;
+  error?: string;
+  value: string;
+  onChange: (value: string) => void;
+  inputMode: "decimal" | "numeric";
+}) {
+  const describedBy = error ? `${id}-error` : hint ? `${id}-hint` : undefined;
   return (
     <div>
       <label htmlFor={id} className="mb-1 block text-[13px] font-medium text-ink">
         {label}
       </label>
-      {children}
-      {hint && !error && <p className="mt-1 text-[12px] text-ink-muted">{hint}</p>}
+      <input
+        id={id}
+        className={`${input} num`}
+        inputMode={inputMode}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={describedBy}
+      />
+      {hint && !error && (
+        <p id={`${id}-hint`} className="mt-1 text-[12px] text-ink-muted">
+          {hint}
+        </p>
+      )}
       {error && (
-        <p role="alert" className="mt-1 text-[12px] text-bad">
+        <p id={`${id}-error`} role="alert" className="mt-1 text-[12px] text-bad">
           {error}
         </p>
       )}
@@ -81,6 +120,7 @@ function Field({ id, label, hint, error, children }: { id: string; label: string
 export default function RulesPage() {
   const [active, setActive] = useState<ActiveLeashPolicy | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [form, setForm] = useState<RulesForm | null>(null);
   const [errors, setErrors] = useState<RulesFormErrors>({});
   const [formError, setFormError] = useState<string | null>(null);
@@ -94,6 +134,7 @@ export default function RulesPage() {
   const [activating, setActivating] = useState(false);
   const [activateError, setActivateError] = useState<string | null>(null);
   const [activatedVersion, setActivatedVersion] = useState<number | null>(null);
+  const [reloadFailed, setReloadFailed] = useState(false);
 
   const load = useCallback(async () => {
     const policy = await api.activePolicy();
@@ -101,19 +142,22 @@ export default function RulesPage() {
     return policy;
   }, []);
 
-  useEffect(() => {
-    let live = true;
-    load()
-      .then((policy) => live && setForm((f) => f ?? formFromPolicy(policy)))
-      .catch(() => undefined) // the global toast already told the owner
-      .finally(() => live && setLoading(false));
-    return () => {
-      live = false;
-    };
+  const firstLoad = useCallback(() => {
+    setLoading(true);
+    setLoadFailed(false);
+    return load()
+      .then((policy) => setForm((f) => f ?? formFromPolicy(policy)))
+      .catch(() => setLoadFailed(true))
+      .finally(() => setLoading(false));
   }, [load]);
+
+  useEffect(() => {
+    void firstLoad();
+  }, [firstLoad]);
 
   const setField = <K extends keyof RulesForm>(key: K, value: RulesForm[K]) => {
     setForm((f) => (f ? { ...f, [key]: value } : f));
+    setDraft(null); // a saved draft no longer matches what the form says
     setErrors((e) => ({ ...e, [key]: undefined }));
   };
 
@@ -145,8 +189,10 @@ export default function RulesPage() {
     setCompileMsg(null);
     setActivatedVersion(null);
     try {
-      const res = await request<PolicyCompileResponse>("POST", "/leash/policy/compile", { body: { text: body }, quiet: true });
+      const res = await compilePolicyQuiet(body);
       setDraft(res);
+      setForm(formFromPolicy(res.policy));
+      setErrors({});
       setActivateError(null);
     } catch (err) {
       if (isApiError(err) && (err.status === 501 || err.code === "COMPILER_UNAVAILABLE")) setCompileMsg(COMPILER_UNAVAILABLE);
@@ -161,18 +207,24 @@ export default function RulesPage() {
     setActivating(true);
     setActivateError(null);
     try {
-      const res = await api.activatePolicy({ version: draft.draft_version });
+      const res = await activatePolicyQuiet(draft.draft_version);
       setActivatedVersion(res.version);
       setDraft(null);
+    } catch (err) {
+      setActivateError(activateMessage(err));
+      setActivating(false);
+      return;
+    }
+    // The activation worked; a failed reload must not hide that.
+    try {
       const policy = await load();
       setForm(formFromPolicy(policy));
-    } catch (err) {
-      setActivateError(isApiError(err) ? err.message : "Something went wrong. Try again.");
-    } finally {
-      setActivating(false);
+      setReloadFailed(false);
+    } catch {
+      setReloadFailed(true);
     }
+    setActivating(false);
   };
-
   return (
     <div>
       <PageHeader
@@ -193,10 +245,20 @@ export default function RulesPage() {
           }
         >
           {loading && <p className="text-[14px] text-ink-muted">Loading the active rules...</p>}
+          {loadFailed && !loading && (
+            <p role="alert" className="flex flex-wrap items-center gap-3 text-[14px] text-bad">
+              Couldn't load the rules.
+              <Button size="sm" variant="secondary" onClick={() => void firstLoad()}>
+                Retry
+              </Button>
+            </p>
+          )}
           {active && <RuleCards policy={active} />}
+          {active && <p className="mt-3 text-[13px] text-ink-muted">A matching ask or block rule always wins.</p>}
           {activatedVersion !== null && (
             <p role="status" className="mt-3 text-[14px] text-good">
               Version {activatedVersion} is now active.
+              {reloadFailed && " Couldn't refresh the list above. Reload the page to see it."}
             </p>
           )}
         </Card>
@@ -235,21 +297,46 @@ export default function RulesPage() {
                 label="Auto-send limit (USD)"
                 hint="Correction invoices up to this amount go out on their own. Larger ones wait for you."
                 error={errors.autoSendLimit}
-              >
-                <input id="rf-limit" className={`${input} num`} inputMode="decimal" value={form.autoSendLimit} onChange={(e) => setField("autoSendLimit", e.target.value)} />
-              </Field>
-              <Field id="rf-confidence" label="Minimum confidence" hint="How sure Leash must be of the contract reading, 0 to 1." error={errors.minConfidence}>
-                <input id="rf-confidence" className={`${input} num`} inputMode="decimal" value={form.minConfidence} onChange={(e) => setField("minConfidence", e.target.value)} />
-              </Field>
-              <Field id="rf-repeat" label="Repeat-invoice window (days)" hint="A second invoice to the same client inside this window waits for you. 0 turns it off." error={errors.repeatWindowDays}>
-                <input id="rf-repeat" className={`${input} num`} inputMode="numeric" value={form.repeatWindowDays} onChange={(e) => setField("repeatWindowDays", e.target.value)} />
-              </Field>
-              <Field id="rf-email" label="Email-change hold (days)" hint="A payout email changed this recently puts the next payment on hold." error={errors.emailWindowDays}>
-                <input id="rf-email" className={`${input} num`} inputMode="numeric" value={form.emailWindowDays} onChange={(e) => setField("emailWindowDays", e.target.value)} />
-              </Field>
-              <Field id="rf-margin" label="Payroll cash limit (%)" hint="A run that spends more than this share of the money received waits for you." error={errors.marginLimitPct}>
-                <input id="rf-margin" className={`${input} num`} inputMode="decimal" value={form.marginLimitPct} onChange={(e) => setField("marginLimitPct", e.target.value)} />
-              </Field>
+                inputMode="decimal"
+                value={form.autoSendLimit}
+                onChange={(v) => setField("autoSendLimit", v)}
+              />
+              <Field
+                id="rf-confidence"
+                label="Minimum confidence"
+                hint="How sure Leash must be of the contract reading, 0 to 1."
+                error={errors.minConfidence}
+                inputMode="decimal"
+                value={form.minConfidence}
+                onChange={(v) => setField("minConfidence", v)}
+              />
+              <Field
+                id="rf-repeat"
+                label="Repeat-invoice window (days)"
+                hint="A second invoice to the same client inside this window waits for you. 0 turns it off."
+                error={errors.repeatWindowDays}
+                inputMode="numeric"
+                value={form.repeatWindowDays}
+                onChange={(v) => setField("repeatWindowDays", v)}
+              />
+              <Field
+                id="rf-email"
+                label="Email-change hold (days)"
+                hint="A payout email changed this recently puts the next payment on hold."
+                error={errors.emailWindowDays}
+                inputMode="numeric"
+                value={form.emailWindowDays}
+                onChange={(v) => setField("emailWindowDays", v)}
+              />
+              <Field
+                id="rf-margin"
+                label="Payroll cash limit (%)"
+                hint="A run that spends more than this share of the money received waits for you."
+                error={errors.marginLimitPct}
+                inputMode="decimal"
+                value={form.marginLimitPct}
+                onChange={(v) => setField("marginLimitPct", v)}
+              />
               <div className="flex items-center gap-2 self-center">
                 <input
                   id="rf-never"
@@ -287,13 +374,7 @@ export default function RulesPage() {
               </span>
             }
           >
-            <ul className="flex flex-col gap-2" aria-label="Draft cards">
-              {draft.cards.map((card) => (
-                <li key={card} className="rounded border border-paper-rule bg-paper px-4 py-3 text-[14px] text-ink">
-                  {card}
-                </li>
-              ))}
-            </ul>
+            <RuleCards policy={draft.policy} label="Draft cards" />
             {draft.test_cases.length > 0 && (
               <ul className="mt-3 list-disc pl-5 text-[13px] text-ink-soft">
                 {draft.test_cases.map((c) => (

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
+import { on } from "../lib/events";
 import { setTransport, type Transport, type TransportRequest } from "../api/client";
 import { setDemoKey } from "../api/demoKey";
 import { mockTransport, resetMockState, setMockLatency } from "../api/mocks";
@@ -39,6 +40,17 @@ describe("rules helpers", () => {
     expect(describeRule(rule("G-05"))).toBe("Invoices whose line items don't add up are blocked (built in, can't be removed).");
     const unknown: LeashRule = { ...rule("G-02"), id: "X-1", when: { vip_client: true }, outcome: "DENY" };
     expect(describeRule(unknown)).toBe("When vip client is true, Leash blocks it (X-1).");
+  });
+
+  it("describeRule handles an unquoted clause, payroll actions and a bad confidence", () => {
+    const g1 = rule("G-01");
+    expect(describeRule({ ...g1, when: { amount_lte: "100.00", clause_quote_present: false } })).toBe(
+      "Correction invoices of $100.00 or less go out on their own when the clause is not quoted.",
+    );
+    const pay = describeRule({ ...g1, applies_to: "SEND_PAYROLL_BATCH", outcome: "ASK", when: { amount_gt: "5000.00" } });
+    expect(pay).toBe("Payroll runs above $5,000.00 wait for you.");
+    expect(pay.toLowerCase()).not.toContain("invoice");
+    expect(describeRule({ ...g1, when: { amount_lte: "10.00", confidence_gte: "high" } })).toContain("confidence ≥ high");
   });
 
   it("policyFromForm never includes reserved ids and maps the limit to G-01/G-02 as 2-dp strings", () => {
@@ -114,7 +126,7 @@ describe("Leash Rules screen (WP-5.5)", () => {
     expect(calls.some((c) => c.method === "POST")).toBe(false);
     await user.click(screen.getByRole("button", { name: "Preview" }));
 
-    const activate = await screen.findByRole("button", { name: "Activate version 2" });
+    const activate = await screen.findByRole("button", { name: "Activate version 3" });
     const post = calls.find((c) => c.method === "POST" && c.path === "/leash/policy");
     const sent = post?.body as LeashPolicy;
     expect(sent.rules.map((r) => r.id)).not.toContain("G-05");
@@ -124,8 +136,11 @@ describe("Leash Rules screen (WP-5.5)", () => {
 
     await user.click(activate);
     await waitFor(() => expect(calls.some((c) => c.path === "/leash/policy/activate")).toBe(true));
-    expect(calls.find((c) => c.path === "/leash/policy/activate")?.body).toEqual({ version: 2 });
-    expect(await screen.findByText("Version 2 is now active.")).toBeInTheDocument();
+    expect(calls.find((c) => c.path === "/leash/policy/activate")?.body).toEqual({ version: 3 });
+    expect(await screen.findByText("Version 3 is now active.")).toBeInTheDocument();
+    expect(await screen.findByText("Version 3")).toBeInTheDocument();
+    expect(screen.getByText("Correction invoices of $400.00 or less go out on their own when the clause is quoted and the contract is clear (confidence ≥ 0.90).")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Activate version/ })).not.toBeInTheDocument();
   });
 
   it("blocks a bad form before sending anything", async () => {
@@ -178,5 +193,99 @@ describe("Leash Rules screen (WP-5.5)", () => {
     await user.click(screen.getByRole("button", { name: "Compile with AI" }));
     expect(await screen.findByText("The AI rule writer isn't available yet. Use the form below.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Preview" })).toBeEnabled();
+  });
+
+  it("matches a 422 field named with a dotted prefix", async () => {
+    setTransport(async (req) =>
+      req.method === "POST" && req.path === "/leash/policy"
+        ? {
+            status: 422,
+            body: {
+              error: {
+                code: "VALIDATION_ERROR",
+                message: "bad",
+                details: { fields: [{ field: "body.payroll_margin_limit_pct", msg: "must be at most 100" }] },
+              },
+            },
+          }
+        : mockTransport(req),
+    );
+    const user = userEvent.setup();
+    renderRules();
+    await user.click(await screen.findByRole("button", { name: "Preview" }));
+    const msg = await screen.findByText("must be at most 100");
+    expect(msg.id).toBe("rf-margin-error");
+    const field = screen.getByLabelText("Payroll cash limit (%)");
+    expect(field).toHaveAttribute("aria-invalid", "true");
+    expect(field).toHaveAttribute("aria-describedby", "rf-margin-error");
+  });
+
+  it("a 409 on activate shows inline and emits no api-error", async () => {
+    const seen: unknown[] = [];
+    const off = on("api-error", (e) => seen.push(e));
+    setTransport(async (req) =>
+      req.path === "/leash/policy/activate"
+        ? { status: 409, body: { error: { code: "POLICY_VERSION_CONFLICT", message: "Another policy was just activated.", details: null } } }
+        : mockTransport(req),
+    );
+    const user = userEvent.setup();
+    renderRules();
+    await user.click(await screen.findByRole("button", { name: "Preview" }));
+    await user.click(await screen.findByRole("button", { name: "Activate version 3" }));
+    expect(await screen.findByText("Another version was just activated. Reload to see it.")).toBeInTheDocument();
+    off();
+    expect(seen).toEqual([]);
+  });
+
+  it("keeps the success message when the reload after activation fails", async () => {
+    let activated = false;
+    setTransport(async (req) => {
+      if (req.path === "/leash/policy/activate") activated = true;
+      if (activated && req.method === "GET" && req.path === "/leash/policy") {
+        return { status: 500, body: { error: { code: "INTERNAL", message: "boom", details: null } } };
+      }
+      return mockTransport(req);
+    });
+    const user = userEvent.setup();
+    renderRules();
+    await user.click(await screen.findByRole("button", { name: "Preview" }));
+    await user.click(await screen.findByRole("button", { name: "Activate version 3" }));
+    expect(await screen.findByText(/Version 3 is now active\./)).toBeInTheDocument();
+    expect(screen.queryByText("That draft is gone. Preview again.")).not.toBeInTheDocument();
+  });
+
+  it("editing the form clears a stale draft", async () => {
+    const user = userEvent.setup();
+    renderRules();
+    await user.click(await screen.findByRole("button", { name: "Preview" }));
+    expect(await screen.findByRole("button", { name: "Activate version 3" })).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Auto-send limit (USD)"), "1");
+    expect(screen.queryByRole("button", { name: /Activate version/ })).not.toBeInTheDocument();
+  });
+
+  it("a compiled draft fills the form and renders its rule cards", async () => {
+    const user = userEvent.setup();
+    renderRules();
+    await user.type(await screen.findByLabelText(/Describe the rules/), "small ones go out on their own");
+    await user.click(screen.getByRole("button", { name: "Compile with AI" }));
+    const cards = await screen.findByRole("list", { name: "Draft cards" });
+    expect(within(cards).getByText("Correction invoices above $250.00 wait for you.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Auto-send limit (USD)")).toHaveValue("250.00");
+    expect(screen.getByRole("button", { name: "Activate version 3" })).toBeInTheDocument();
+  });
+
+  it("shows a retry state when the rules cannot be loaded", async () => {
+    let fail = true;
+    setTransport(async (req) =>
+      fail && req.method === "GET" && req.path === "/leash/policy"
+        ? { status: 500, body: { error: { code: "INTERNAL", message: "boom", details: null } } }
+        : mockTransport(req),
+    );
+    const user = userEvent.setup();
+    renderRules();
+    expect(await screen.findByText(/Couldn't load the rules\./)).toBeInTheDocument();
+    fail = false;
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByRole("list", { name: "Rule cards" })).toBeInTheDocument();
   });
 });

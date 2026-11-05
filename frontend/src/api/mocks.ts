@@ -134,6 +134,7 @@ export function resetMockState(): void {
   state = seed();
   payrollMock = { run: null, sentGets: 0 };
   teamMock = null;
+  policyMock = { active: null, latest: 0, drafts: {} };
   try {
     sessionStorage.removeItem(PERSIST_KEY);
   } catch {
@@ -753,19 +754,74 @@ function sendRun(): TransportResponse {
   return ok(sent, 202);
 }
 
+/**
+ * The policy is stateful like the real server: a draft gets `max(version) + 1` (the body's version is
+ * ignored), activation makes it the active one, and GET returns the active one.
+ * Cleared by resetMockState().
+ */
+let policyMock: { active: Record<string, unknown> | null; latest: number; drafts: Record<number, LeashPolicy> } = {
+  active: null,
+  latest: 0,
+  drafts: {},
+};
+
+function activePolicyMock(): Record<string, unknown> | null {
+  if (!policyMock.active) {
+    const fixture = pick<Record<string, unknown>>(leashFixtures, "active_policy.json");
+    if (!fixture) return null;
+    policyMock.active = fixture;
+    policyMock.latest = Math.max(policyMock.latest, Number(fixture.version));
+  }
+  return policyMock.active;
+}
+
+function storeDraft(policy: LeashPolicy, cards: string[], testCases: string[]): TransportResponse {
+  activePolicyMock();
+  const version = policyMock.latest + 1;
+  policyMock.latest = version;
+  const hasG05 = policy.rules.some((r) => r.id === "G-05");
+  const stored: LeashPolicy = {
+    ...policy,
+    version,
+    rules: hasG05
+      ? policy.rules
+      : [
+          ...policy.rules,
+          {
+            id: "G-05",
+            applies_to: "SEND_REMEDIATION_INVOICE",
+            when: { line_items_sum_mismatch: true },
+            outcome: "DENY",
+            source_text: "(built in)",
+          },
+        ],
+  };
+  policyMock.drafts[version] = stored;
+  const res: PolicyCompileResponse = { draft_version: version, status: "DRAFT", policy: stored, cards, test_cases: testCases };
+  return ok(res);
+}
+
 function echoPolicyDraft(req: TransportRequest): TransportResponse {
   const policy = req.body as LeashPolicy | undefined;
   if (!policy || !Array.isArray(policy.rules)) {
     return fail(422, "VALIDATION_ERROR", "Send a policy with a rules list.", { fields: { rules: "required" } });
   }
-  const res: PolicyCompileResponse = {
-    draft_version: policy.version,
-    status: "DRAFT",
-    policy,
-    cards: ["Draft saved"],
-    test_cases: [],
-  };
-  return ok(res);
+  return storeDraft(policy, ["Draft saved"], []);
+}
+
+function compilePolicyMock(): TransportResponse {
+  const fixture = pick<PolicyCompileResponse>(leashFixtures, "policy_compile_response.json");
+  if (!fixture) return fail(404, "NOT_FOUND", "Fixture policy_compile_response.json is not available.");
+  return storeDraft(fixture.policy, fixture.cards, fixture.test_cases);
+}
+
+function activatePolicyMock(req: TransportRequest): TransportResponse {
+  const version = (req.body as { version?: number } | undefined)?.version ?? 0;
+  const draft = policyMock.drafts[version];
+  if (!draft) return fail(409, "POLICY_DRAFT_NOT_FOUND", "That policy version was never saved.");
+  const activated_at = new Date().toISOString();
+  policyMock.active = { ...draft, activated_at };
+  return ok({ version, active: true, activated_at });
 }
 
 // ------------------------------------------------------------------ router
@@ -782,11 +838,10 @@ const routes: Array<[string, RegExp, Handler]> = [
   ["POST", /^\/discrepancies\/([^/]+)\/remediate$/, (r, [id]) => remediate(decodeURIComponent(id), r)],
   ["GET", /^\/leash\/ledger\/margin$/, () => margin()],
   ["GET", /^\/leash\/decisions$/, (r) => decisions(r)],
-  ["GET", /^\/leash\/policy$/, () => leashFixture("active_policy.json")],
+  ["GET", /^\/leash\/policy$/, () => { const a = activePolicyMock(); return a ? ok(a) : fail(404, "NOT_FOUND", "No active policy."); }],
   ["POST", /^\/leash\/policy$/, (r) => echoPolicyDraft(r)],
-  ["POST", /^\/leash\/policy\/compile$/, () => leashFixture("policy_compile_response.json")],
-  ["POST", /^\/leash\/policy\/activate$/, (r) =>
-    ok({ version: (r.body as { version?: number })?.version ?? 1, active: true, activated_at: new Date().toISOString() })],
+  ["POST", /^\/leash\/policy\/compile$/, () => compilePolicyMock()],
+  ["POST", /^\/leash\/policy\/activate$/, (r) => activatePolicyMock(r)],
   ["GET", /^\/leash\/team$/, () => ok(roster())],
   ["POST", /^\/leash\/team$/, (r) => {
     const m = { member_id: nextId("tm_"), email_changed_at: null, first_paid_at: null, active: true, ...(r.body as object) } as TeamMemberOut;

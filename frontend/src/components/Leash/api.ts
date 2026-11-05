@@ -7,6 +7,7 @@ import { request } from "../../api/client";
 import type {
   LeashPolicy,
   PayrollRunOut,
+  PolicyActivateResponse,
   PolicyCompileResponse,
   TeamMemberCreate,
   TeamMemberOut,
@@ -32,3 +33,11 @@ export const discardTimesheet = (uploadId: string) =>
   request<{ upload_id: string; status: "REJECTED" }>("POST", `/leash/timesheets/${encodeURIComponent(uploadId)}/discard`, {
     quiet: true,
   });
+
+/** AI rule writer, quiet so a 501 (Fallback E) shows inline instead of as a toast. */
+export const compilePolicyQuiet = (text: string) =>
+  request<PolicyCompileResponse>("POST", "/leash/policy/compile", { body: { text }, quiet: true });
+
+/** Make a saved draft the active policy. Quiet: 409s are shown on the Rules screen. */
+export const activatePolicyQuiet = (version: number) =>
+  request<PolicyActivateResponse>("POST", "/leash/policy/activate", { body: { version }, quiet: true });

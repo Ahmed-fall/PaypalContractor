@@ -218,7 +218,9 @@ describe("Leash API helpers on the mock", () => {
     const policy = { version: 3, rules: [], payroll_margin_limit_pct: "80", email_change_window_days: 7 };
     const draft = await savePolicyDraft(policy);
     expect(draft.status).toBe("DRAFT");
-    expect(draft.policy).toEqual(policy);
+    // Like the server: the next version is assigned and the built-in G-05 is appended.
+    expect(draft.draft_version).toBe(3);
+    expect(draft.policy).toEqual({ ...policy, version: 3, rules: [expect.objectContaining({ id: "G-05" })] });
 
     expect(await discardTimesheet("tsu_1")).toEqual({ upload_id: "tsu_1", status: "REJECTED" });
   });

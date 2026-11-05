@@ -41,6 +41,11 @@ function money(value: RuleConditionValue): string {
   return formatMoney(String(value));
 }
 
+function confidence(value: RuleConditionValue): string {
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toFixed(2) : String(value);
+}
+
 function conditionText(key: string, value: RuleConditionValue): string {
   switch (key) {
     case "amount_lte":
@@ -48,7 +53,7 @@ function conditionText(key: string, value: RuleConditionValue): string {
     case "amount_gt":
       return `the amount is above ${money(value)}`;
     case "confidence_gte":
-      return `the contract reading is at least ${Number(value).toFixed(2)} confident`;
+      return `the contract reading is at least ${confidence(value)} confident`;
     case "clause_quote_present":
       return value ? "the breached clause is quoted" : "the breached clause is not quoted";
     case "client_tag":
@@ -62,40 +67,49 @@ function conditionText(key: string, value: RuleConditionValue): string {
   }
 }
 
+const AMOUNT_SUBJECT: Record<GuardAction, string> = {
+  SEND_REMEDIATION_INVOICE: "Correction invoices",
+  PAY_TEAM_MEMBER: "Payments",
+  SEND_PAYROLL_BATCH: "Payroll runs",
+};
+
 /** One plain sentence for a rule. Known `when` shapes read naturally; anything else still names the outcome. */
 export function describeRule(rule: LeashRule): string {
   const when = rule.when;
   const keys = Object.keys(when).sort();
   const only = (allowed: string[]) => keys.every((k) => allowed.includes(k));
+  const invoice = rule.applies_to === INVOICE;
+  const noun = AMOUNT_SUBJECT[rule.applies_to] ?? "Actions";
 
   if (keys.includes("amount_lte") && only(["amount_lte", "confidence_gte", "clause_quote_present"])) {
     const extras: string[] = [];
     if (when.clause_quote_present === true) extras.push("the clause is quoted");
+    if (when.clause_quote_present === false) extras.push("the clause is not quoted");
     if (when.confidence_gte !== undefined) {
-      extras.push(`the contract is clear (confidence ≥ ${Number(when.confidence_gte).toFixed(2)})`);
+      extras.push(`the contract is clear (confidence ≥ ${confidence(when.confidence_gte)})`);
     }
     const tail = extras.length ? ` when ${extras.join(" and ")}` : "";
-    const base = `Correction invoices of ${money(when.amount_lte)} or less`;
+    const base = `${noun} of ${money(when.amount_lte)} or less`;
     if (rule.outcome === "ALLOW") return `${base} go out on their own${tail}.`;
     if (rule.outcome === "ASK") return `${base} wait for you${tail}.`;
     return `${base} are blocked${tail}.`;
   }
   if (keys.length === 1 && keys[0] === "amount_gt") {
-    const base = `Correction invoices above ${money(when.amount_gt)}`;
+    const base = `${noun} above ${money(when.amount_gt)}`;
     if (rule.outcome === "ALLOW") return `${base} go out on their own.`;
     return `${base} ${rule.outcome === "ASK" ? "wait for you" : "are blocked"}.`;
   }
-  if (keys.length === 1 && keys[0] === "client_tag") {
+  if (invoice && keys.length === 1 && keys[0] === "client_tag") {
     const base = `Clients tagged ${String(when.client_tag)}`;
     if (rule.outcome === "ALLOW") return `${base} always go out on their own.`;
     return `${base} always ${rule.outcome === "ASK" ? "wait for you" : "are blocked"}.`;
   }
-  if (keys.length === 1 && keys[0] === "invoiced_same_client_within_days") {
+  if (invoice && keys.length === 1 && keys[0] === "invoiced_same_client_within_days") {
     const base = `A second invoice to the same client within ${String(when.invoiced_same_client_within_days)} days`;
     if (rule.outcome === "ALLOW") return `${base} goes out on its own.`;
     return `${base} ${rule.outcome === "ASK" ? "waits for you" : "is blocked"}.`;
   }
-  if (keys.length === 1 && keys[0] === "line_items_sum_mismatch" && when.line_items_sum_mismatch === true && rule.outcome === "DENY") {
+  if (invoice && keys.length === 1 && keys[0] === "line_items_sum_mismatch" && when.line_items_sum_mismatch === true && rule.outcome === "DENY") {
     return "Invoices whose line items don't add up are blocked (built in, can't be removed).";
   }
   const conditions = keys.map((k) => conditionText(k, when[k])).join(" and ");
@@ -197,6 +211,7 @@ export function policyFromForm(form: RulesForm, base: LeashPolicy): LeashPolicy 
     });
   }
   const others = base.rules.filter((r) => !FORM_RULE_IDS.includes(r.id) && !RESERVED_RULE_IDS.includes(r.id));
+  // `version` is only a placeholder: the server assigns the real draft version (latest + 1) and ignores this one.
   return {
     version: base.version,
     rules: [...rules, ...others],
