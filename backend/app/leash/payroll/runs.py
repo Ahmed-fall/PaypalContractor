@@ -308,6 +308,22 @@ async def wait_for_background() -> None:
 # --- checks --------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class CheckedPayee:
+    """The payout email and change time the PR-01 check actually looked at."""
+
+    email: str
+    email_changed_at: datetime | None
+
+
+@dataclass(frozen=True)
+class ReadyLines:
+    """What the send gate lets through, with the payees exactly as they were checked."""
+
+    lines: list[PayrollLineOut]
+    checked: dict[str, CheckedPayee]
+
+
 @dataclass
 class _LineIn:
     line_id: str
@@ -320,6 +336,7 @@ class _LineIn:
     owner_action_at: datetime | None
     owner_snapshot: dict[str, Any] | None
     email_changed_at: datetime | None
+    payee: CheckedPayee
 
 
 @dataclass
@@ -405,6 +422,13 @@ def _gather_inputs(run_id: str) -> _Inputs:
             if draft is not None and draft.rate is not None and run.status not in FINISHED:
                 # Until it is sent the line follows the current timesheet and roster rate.
                 hours, rate, gross = draft.hours, draft.rate, draft.gross
+            if draft is not None and draft.member is not None:
+                payee = CheckedPayee(draft.member.payout_email, draft.member.email_changed_at)
+            else:  # no hours: the line is denied and never paid
+                payee = CheckedPayee(
+                    member.payout_email if member is not None else "",
+                    aware(member.email_changed_at) if member is not None else None,
+                )
             lines.append(
                 _LineIn(
                     row.id,
@@ -417,6 +441,7 @@ def _gather_inputs(run_id: str) -> _Inputs:
                     aware(row.owner_action_at),
                     row.owner_flags_json if isinstance(row.owner_flags_json, dict) else None,
                     aware(member.email_changed_at) if member is not None else None,
+                    payee,
                 )
             )
             histories[row.team_member_id] = _history(db, row.team_member_id, run_id)
@@ -491,9 +516,14 @@ async def check_run(run_id: str) -> PayrollRunOut:
 
 
 async def _check_run_locked(run_id: str) -> PayrollRunOut:
+    return (await _check_and_snapshot(run_id))[0]
+
+
+async def _check_and_snapshot(run_id: str) -> tuple[PayrollRunOut, dict[str, CheckedPayee]]:
     inputs = await asyncio.to_thread(_gather_inputs, run_id)
+    payees = {ln.line_id: ln.payee for ln in inputs.lines}
     if inputs.status in FINISHED:
-        return await asyncio.to_thread(get_run_out, run_id)
+        return await asyncio.to_thread(get_run_out, run_id), payees
     policy = await SqlPolicyProvider(session_factory).active_policy()
     now = datetime.now(UTC)
 
@@ -590,7 +620,7 @@ async def _check_run_locked(run_id: str) -> PayrollRunOut:
         status,
         frozenset(stale),
     )
-    return await asyncio.to_thread(get_run_out, run_id)
+    return await asyncio.to_thread(get_run_out, run_id), payees
 
 
 # --- output --------------------------------------------------------------------------
@@ -738,14 +768,15 @@ def _approve_flags(run_id: str, now: datetime) -> None:
 async def lines_ready_to_send(run_id: str, approve_run_flags: list[str]) -> list[PayrollLineOut]:
     """Re-check the run, then return the lines to pay or raise 409 (A.2.2)."""
     async with _lock("run", run_id):
-        return await _lines_ready_locked(run_id, approve_run_flags)
+        return (await lines_ready_locked(run_id, approve_run_flags)).lines
 
 
-async def _lines_ready_locked(run_id: str, approve_run_flags: list[str]) -> list[PayrollLineOut]:
+async def lines_ready_locked(run_id: str, approve_run_flags: list[str]) -> ReadyLines:
+    """The gate itself; the caller holds ``run_lock``. Lines carry the checked payee email."""
     current = await asyncio.to_thread(get_run_out, run_id)
     if current.status in FINISHED:
         raise _not_sendable()
-    out = await _check_run_locked(run_id)
+    out, payees = await _check_and_snapshot(run_id)
     if out.status in FINISHED:
         raise _not_sendable()
     if out.run_decision == LeashDecision.DENY:
@@ -771,8 +802,8 @@ async def _lines_ready_locked(run_id: str, approve_run_flags: list[str]) -> list
         )
     if out.run_flags:
         await asyncio.to_thread(_approve_flags, run_id, datetime.now(UTC))
-    return [
-        ln
+    ready = [
+        ln.model_copy(update={"payout_email": payees[ln.line_id].email})
         for ln in out.lines
         if ln.owner_action != "EXCLUDED"
         and ln.gross > 0
@@ -780,7 +811,9 @@ async def _lines_ready_locked(run_id: str, approve_run_flags: list[str]) -> list
             ln.decision == LeashDecision.ALLOW
             or (ln.decision == LeashDecision.ASK and ln.owner_action == "APPROVED")
         )
+        and ln.line_id in payees
     ]
+    return ReadyLines(ready, {ln.line_id: payees[ln.line_id] for ln in ready})
 
 
 def recompute_run_status(run_id: str) -> PayrollRunOut:
@@ -1043,11 +1076,14 @@ def list_members(db: Session) -> list[TeamMemberOut]:
 
 __all__ = [
     "FINISHED",
+    "CheckedPayee",
+    "ReadyLines",
     "cash_in_for_milestone",
     "check_run",
     "confirm_timesheet_mapping",
     "create_member",
     "get_run_out",
+    "lines_ready_locked",
     "lines_ready_to_send",
     "list_members",
     "margin_rows",

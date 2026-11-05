@@ -15,6 +15,7 @@ os.environ.setdefault("DEMO_KEY", "test-demo-key-0123456789abcdef")
 os.environ.setdefault("PAYPAL_API_BASE_URL", "https://api-m.sandbox.paypal.com")
 os.environ.setdefault("PAYPAL_WEBHOOK_ID", "wh-test-id")
 
+import asyncio  # noqa: E402
 import json  # noqa: E402
 from collections.abc import Callable, Iterator  # noqa: E402
 from datetime import UTC, date, datetime, timedelta  # noqa: E402
@@ -40,6 +41,7 @@ from backend.app.db.database import Base, get_db  # noqa: E402
 from backend.app.leash import models as lm  # noqa: E402
 from backend.app.leash import service as service_module  # noqa: E402
 from backend.app.leash.payroll import runs  # noqa: E402
+from backend.app.schemas.contracts import GuardAction, TeamMemberUpdate  # noqa: E402
 from backend.app.leash.seed import seed_leash_demo  # noqa: E402
 from backend.app.leash.service import LeashService, configure  # noqa: E402
 from backend.app.leash.store import SqlDecisionLog, SqlPolicyProvider  # noqa: E402
@@ -865,3 +867,45 @@ def test_policy_only_line_ask_shows_rule_id(ctx: Ctx) -> None:
     assert blocked.status_code == 409
     asks = blocked.json()["error"]["details"]["open_asks"]
     assert {"line_id": sara["line_id"], "flags": ["R-LINE"]} in asks
+
+
+@respx.mock
+def test_email_changed_during_the_gate_is_never_paid(
+    ctx: Ctx, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    route = respx.post(PAYOUTS_URL).mock(return_value=_created())
+    run = _create_run(ctx)
+    run_id = run["run_id"]
+    omar = _line(run, "Omar")
+    r = ctx.patch(
+        f"/payroll/runs/{run_id}/lines/{omar['line_id']}", json={"owner_action": "EXCLUDED"}
+    )
+    assert r.status_code == 200
+    sara_id = next(m["member_id"] for m in ctx.get("/team").json() if m["name"] == "Sara")
+
+    real_decide = runs.decide
+    state = {"n": 0}
+
+    async def slow_decide(action: GuardAction, facts: dict[str, Any], subject_id: str) -> Any:
+        # While the send gate's second check is in flight, Sara's payout email is changed.
+        if action == GuardAction.SEND_PAYROLL_BATCH:
+            state["n"] += 1
+            if state["n"] == 2:
+
+                def _swap() -> None:
+                    with ctx.sf() as db:
+                        runs.update_member(
+                            db, sara_id, TeamMemberUpdate(payout_email="attacker@example.com")
+                        )
+
+                await asyncio.to_thread(_swap)
+        return await real_decide(action, facts, subject_id)
+
+    monkeypatch.setattr(runs, "decide", slow_decide)
+    s = _send(ctx, run_id, [])
+    assert s.status_code == 409, s.text
+    assert s.json()["error"]["code"] == "RUN_NOT_SENDABLE"
+    assert route.call_count == 0
+    with ctx.sf() as db:
+        row = db.get(lm.PayrollRunRow, run_id)
+        assert row is not None and row.sender_batch_id is None

@@ -20,12 +20,14 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from sqlalchemy import select, update
+from sqlalchemy.orm import Session
 
 from ...api.errors import ApiError
 from ...db.database import utcnow
 from ...db.models import Contract, Milestone
-from ...leash.models import PayrollLineRow, PayrollRunRow
+from ...leash.models import PayrollLineRow, PayrollRunRow, TeamMemberRow
 from ...leash.payroll import runs
+from ...leash.store import aware
 from ...schemas.contracts import PayrollLineOut
 from ._client import PayPalAPIError, PayPalUnavailable, paypal_request
 from .auth import PayPalAuthError
@@ -88,6 +90,7 @@ def _not_sendable(message: str) -> ApiError:
     return ApiError(409, "RUN_NOT_SENDABLE", message)
 
 
+_CHANGED = "The payroll run changed. Refresh it and try again."
 _ALREADY_SENT = "This payroll run was already sent to PayPal. Reconcile it before trying again."
 
 
@@ -112,7 +115,32 @@ def _existing(run_id: str, idempotency_key: str) -> str | None:
         return None
 
 
-def _reserve(run_id: str, lines: list[PayrollLineOut], idempotency_key: str) -> _Reserved:
+def _payees_unchanged(
+    db: Session, run_id: str, lines: list[PayrollLineOut], checked: dict[str, runs.CheckedPayee]
+) -> bool:
+    """Is every member's payout email and change time still what the checks looked at?"""
+    members = {
+        row.id: row.team_member_id
+        for row in db.scalars(select(PayrollLineRow).where(PayrollLineRow.run_id == run_id))
+    }
+    for ln in lines:
+        payee = checked.get(ln.line_id)
+        member = db.get(TeamMemberRow, members.get(ln.line_id, ""))
+        if payee is None or member is None:
+            return False
+        if member.payout_email != payee.email or ln.payout_email != payee.email:
+            return False
+        if aware(member.email_changed_at) != payee.email_changed_at:
+            return False
+    return True
+
+
+def _reserve(
+    run_id: str,
+    lines: list[PayrollLineOut],
+    idempotency_key: str,
+    checked: dict[str, runs.CheckedPayee],
+) -> _Reserved:
     """Persist the reservation (batch id, key, total, PENDING lines); return the body to POST."""
     with runs.session_factory() as db:
         run = db.get(PayrollRunRow, run_id)
@@ -122,6 +150,8 @@ def _reserve(run_id: str, lines: list[PayrollLineOut], idempotency_key: str) -> 
             raise _not_sendable(_ALREADY_SENT)
         if not lines:
             raise _not_sendable("This payroll run has no lines to pay.")
+        if not _payees_unchanged(db, run_id, lines, checked):
+            raise _not_sendable(_CHANGED)
         milestone = db.get(Milestone, run.milestone_id) if run.milestone_id else None
         if milestone is None:
             # Monthly runs have no milestone: label the batch with the period.
@@ -220,12 +250,12 @@ async def send_payroll_batch(
         stored = await asyncio.to_thread(_existing, run_id, idempotency_key)
         if stored is not None:
             return stored
-        ready = await runs._lines_ready_locked(run_id, list(approve_run_flags))
-        if {ln.line_id for ln in lines} != {ln.line_id for ln in ready}:
-            raise _not_sendable("The payroll run changed. Refresh it and try again.")
-        lines = ready
+        gate = await runs.lines_ready_locked(run_id, list(approve_run_flags))
+        if {ln.line_id for ln in lines} != {ln.line_id for ln in gate.lines}:
+            raise _not_sendable(_CHANGED)
+        lines = gate.lines
         line_ids = [ln.line_id for ln in lines]
-        reserved = await asyncio.to_thread(_reserve, run_id, lines, idempotency_key)
+        reserved = await asyncio.to_thread(_reserve, run_id, lines, idempotency_key, gate.checked)
         try:
             result = await paypal_request(
                 "POST", _PAYOUTS_PATH, request_id=reserved.request_id, json_body=reserved.body
