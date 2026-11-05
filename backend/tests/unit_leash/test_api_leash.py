@@ -45,7 +45,7 @@ from backend.app.schemas.contracts import GuardAction, TeamMemberUpdate  # noqa:
 from backend.app.leash.seed import seed_leash_demo  # noqa: E402
 from backend.app.leash.service import LeashService, configure  # noqa: E402
 from backend.app.leash.store import SqlDecisionLog, SqlPolicyProvider  # noqa: E402
-from backend.app.services.paypal import _client, payouts_sync  # noqa: E402
+from backend.app.services.paypal import _client, payouts, payouts_sync  # noqa: E402
 
 D = Decimal
 SessionMaker = Callable[[], Session]
@@ -919,3 +919,111 @@ def test_new_run_is_checked_once(ctx: Ctx) -> None:
     with ctx.sf() as db:
         rows = db.query(lm.LeashDecisionRow).count() - before
     assert rows == 4  # three lines and the run, not eight
+
+
+@respx.mock
+def test_full_demo_end_to_end(ctx: Ctx) -> None:
+    """Capture $850 -> H2 run -> exclude Omar -> send -> item webhooks -> PAID -> margin."""
+    captured: dict[str, Any] = {}
+
+    def _post(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        captured["rid"] = request.headers.get("PayPal-Request-Id")
+        return _created()
+
+    respx.post(PAYOUTS_URL).mock(side_effect=_post)
+    portal = ctx.client.portal  # the loop the requests run on, like uvicorn
+
+    # The $850 capture is seeded; H2 prepares the run exactly as pipeline.py calls it.
+    run_id = portal.call(runs.on_milestone_payment, "ms_01")
+    assert run_id is not None
+    assert portal.call(runs.on_milestone_payment, "ms_01") == run_id  # idempotent
+    portal.call(runs.wait_for_background)
+
+    run = ctx.get(f"/payroll/runs/{run_id}").json()
+    assert run["status"] == "AWAITING_APPROVAL"
+    assert (run["total"], run["cash_used_pct"]) == ("720.00", "84.71")
+    assert run["run_decision"] == "ASK" and run["run_flags"] == ["PR-06"]
+    omar, sara, yous = _line(run, "Omar"), _line(run, "Sara"), _line(run, "Youssef")
+    assert omar["decision"] == "ASK" and omar["flags"] == ["PR-01"] and omar["reason"]
+    for ln in (sara, yous):
+        assert ln["decision"] == "ALLOW" and ln["reason"] is None and ln["flags"] == []
+
+    excluded = ctx.patch(
+        f"/payroll/runs/{run_id}/lines/{omar['line_id']}", json={"owner_action": "EXCLUDED"}
+    )
+    assert excluded.status_code == 200, excluded.text
+    after = excluded.json()
+    assert (after["status"], after["total"], after["cash_used_pct"]) == (
+        "CHECKED",
+        "420.00",
+        "49.41",
+    )
+
+    sent = _send(ctx, run_id, [], "send_1")
+    assert sent.status_code == 202, sent.text
+    assert captured["rid"] == payouts.request_id_for(run_id)
+    assert captured["body"] == {
+        "sender_batch_header": {
+            "sender_batch_id": f"fd-ms01-{run_id}",
+            "email_subject": "You have a payment for milestone MS-01",
+            "email_message": "Thank you for your work on Phase 1: Backend Architecture Delivery.",
+        },
+        "items": [
+            {
+                "recipient_type": "EMAIL",
+                "receiver": sara["payout_email"],
+                "amount": {"value": "220.00", "currency": "USD"},
+                "note": "MS-01 · 10.00 h x $22.00",
+                "sender_item_id": sara["line_id"],
+            },
+            {
+                "recipient_type": "EMAIL",
+                "receiver": yous["payout_email"],
+                "amount": {"value": "200.00", "currency": "USD"},
+                "note": "MS-01 · 8.00 h x $25.00",
+                "sender_item_id": yous["line_id"],
+            },
+        ],
+    }
+    assert sent.json() == {
+        "run_id": run_id,
+        "status": "SENT",
+        "sender_batch_id": f"fd-ms01-{run_id}",
+        "paypal_batch_id": "5UXD2E8A7EBQJ",
+        "batch_status": "PENDING",
+        "total": "420.00",
+        "lines_sent": 2,
+        "lines_excluded": 1,
+    }
+
+    with ctx.sf() as db:  # give the webhook a first payment to record
+        yous_line = db.get(lm.PayrollLineRow, yous["line_id"])
+        assert yous_line is not None
+        member_id = yous_line.team_member_id
+        member = db.get(lm.TeamMemberRow, member_id)
+        assert member is not None
+        member.first_paid_at = None
+        db.commit()
+
+    for line, item in ((sara, "ITEM1"), (yous, "ITEM2")):
+        event = {
+            "id": f"WH-{item}",
+            "event_type": "PAYMENT.PAYOUTS-ITEM.SUCCEEDED",
+            "resource": {
+                "payout_item_id": item,
+                "payout_batch_id": "5UXD2E8A7EBQJ",
+                "transaction_status": "SUCCESS",
+                "payout_item": {"sender_item_id": line["line_id"]},
+            },
+        }
+        portal.call(payouts_sync.handle_webhook_event, event)
+    assert ctx.get(f"/payroll/runs/{run_id}").json()["status"] == "PAID"
+    with ctx.sf() as db:
+        paid_member = db.get(lm.TeamMemberRow, member_id)
+        assert paid_member is not None and paid_member.first_paid_at is not None
+
+    margin = ctx.get("/ledger/margin").json()
+    row = next(r for r in margin["rows"] if r["milestone_code"] == "MS-01")
+    assert row["paid_to_team"] == "420.00" and row["margin"] == "430.00"
+    assert row["payroll_status"] == "PAID"
