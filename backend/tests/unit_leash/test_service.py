@@ -360,18 +360,20 @@ async def test_explainer_reason_boundary_200_chars() -> None:
 
 PAY = GuardAction.PAY_TEAM_MEMBER
 BATCH = GuardAction.SEND_PAYROLL_BATCH
-# Payroll has no default rules yet, so DENY needs a small custom payroll rule.
+# Payroll has no default rules yet, so DENY needs a small custom payroll rule. The
+# ids are test-only: reusing a real check id (e.g. PR-07) would claim a meaning
+# ("already paid") that an amount rule does not have.
 PAYROLL_DENY_POLICY = LeashPolicy(
     version=2,
     rules=[
         LeashRule(
-            id="PR-07",
+            id=rule_id,
             applies_to=action,
             when={"amount_gt": "0.00"},
             outcome=LeashDecision.DENY,
             source_text="t",
         )
-        for action in (PAY, BATCH)
+        for action, rule_id in ((PAY, "TEST-PAY-DENY"), (BATCH, "TEST-RUN-DENY"))
     ],
 )
 
@@ -441,3 +443,133 @@ async def test_use_llm_false_for_payroll_allow(
 
 def test_payroll_actions() -> None:
     assert svc.PAYROLL_ACTIONS == frozenset({PAY, BATCH})
+
+
+# --- review fixes (PR #11) ----------------------------------------------------------------
+
+
+def test_payroll_deny_policy_uses_unique_test_ids() -> None:
+    ids = [rule.id for rule in PAYROLL_DENY_POLICY.rules]
+    assert len(set(ids)) == len(ids)
+    assert not any(i.startswith(("PR-", "G-")) for i in ids)
+
+
+def _module_with(fn: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(importlib.util, "find_spec", lambda *_a, **_k: object())
+    monkeypatch.setattr(
+        importlib,
+        "import_module",
+        lambda *_a, **_k: SimpleNamespace(explain_decision=fn),
+    )
+
+
+def test_load_explainer_rejects_old_signature_without_use_llm(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Interface 3 before Rev 2.3 had no use_llm: every call would raise TypeError."""
+
+    async def old(action: Any, decision: Any, rule_ids: Any, facts: Any) -> str:
+        return "x"
+
+    _module_with(old, monkeypatch)
+    with caplog.at_level("WARNING"):
+        assert svc._load_explainer() is None
+    assert "use_llm" in caplog.text
+
+
+def test_load_explainer_accepts_keyword_only_use_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def new(
+        action: Any, decision: Any, rule_ids: Any, facts: Any, *, use_llm: bool = False
+    ) -> str:
+        return "x"
+
+    _module_with(new, monkeypatch)
+    assert svc._load_explainer() is new
+
+
+def test_load_explainer_rejects_sync_function(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def sync(*_: Any, use_llm: bool = False) -> str:
+        return "x"
+
+    _module_with(sync, monkeypatch)
+    with caplog.at_level("WARNING"):
+        assert svc._load_explainer() is None
+    assert "async" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_explainer_failure_is_logged_not_silent(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    service, _ = make(_raises)
+    with caplog.at_level("WARNING"):
+        result = await service.decide(INVOICE, dict(DEMO), "dsc_1")
+    assert result.reason == template_reason(
+        INVOICE, LeashDecision.ALLOW, ["G-01"], DEMO
+    )
+    assert "RuntimeError" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_template_path_never_waits_the_llm_budget() -> None:
+    """Invoice guard (H1): use_llm=False must be instant even if the explainer hangs."""
+
+    async def hangs(*_: Any, **__: Any) -> str:
+        await asyncio.sleep(10)
+        return "late"
+
+    service = LeashService(
+        StaticPolicyProvider(default_policy()),
+        InMemoryDecisionLog(),
+        explainer=hangs,
+        explain_timeout_s=3.0,
+    )
+    start = time.perf_counter()
+    result = await service.decide(INVOICE, dict(DEMO), "dsc_1")
+    assert time.perf_counter() - start < svc.TEMPLATE_PATH_TIMEOUT_S + 0.25
+    assert result.reason == template_reason(
+        INVOICE, LeashDecision.ALLOW, ["G-01"], DEMO
+    )
+
+
+@pytest.mark.asyncio
+async def test_llm_path_keeps_the_full_budget() -> None:
+    """Payroll Ask: an explainer slower than the template cap still gets used."""
+    delay = svc.TEMPLATE_PATH_TIMEOUT_S + 0.15
+
+    async def thoughtful(*_: Any, use_llm: bool) -> str:
+        await asyncio.sleep(delay)
+        return "LLM reason"
+
+    service = LeashService(
+        StaticPolicyProvider(default_policy()),
+        InMemoryDecisionLog(),
+        explainer=thoughtful,
+        explain_timeout_s=3.0,
+    )
+    result = await service.decide(PAY, {"amount": "450.00"}, "prl_1")
+    assert result.decision == LeashDecision.ASK
+    assert result.reason == "LLM reason"
+
+
+def test_template_path_cap_is_well_below_llm_budget() -> None:
+    assert 0 < svc.TEMPLATE_PATH_TIMEOUT_S <= 0.5 < svc.EXPLAIN_TIMEOUT_S
+
+
+def test_load_explainer_accepts_async_fn_whose_signature_cannot_be_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def opaque(*_: Any, **__: Any) -> str:
+        return "x"
+
+    _module_with(opaque, monkeypatch)
+
+    def no_signature(*_a: Any, **_k: Any) -> Any:
+        raise ValueError("no signature")
+
+    monkeypatch.setattr(svc.inspect, "signature", no_signature)
+    assert svc._load_explainer() is opaque
