@@ -261,11 +261,24 @@ def configure(service: LeashService) -> None:
 
 
 def _default_service() -> LeashService:
-    return LeashService(
-        StaticPolicyProvider(default_policy()),
-        InMemoryDecisionLog(),
-        explainer=_load_explainer(),
-    )
+    """SQL-backed when the DB package is importable, else the in-memory pair.
+
+    Imports are lazy so merely importing ``backend.app.leash`` never builds an engine.
+    """
+    try:
+        from ..db.database import Base, engine
+        from . import models
+        from .store import SqlDecisionLog, SqlPolicyProvider
+    except Exception:  # noqa: BLE001 - no usable DB package: keep the in-memory pair
+        logger.warning("leash: DB package unavailable; using in-memory policy and log")
+        return LeashService(
+            StaticPolicyProvider(default_policy()),
+            InMemoryDecisionLog(),
+            explainer=_load_explainer(),
+        )
+    # Leash tables are not in db.init_db()'s import set; create any that are missing.
+    Base.metadata.create_all(engine, tables=models.LEASH_TABLES)
+    return LeashService(SqlPolicyProvider(), SqlDecisionLog(), explainer=_load_explainer())
 
 
 async def decide(
