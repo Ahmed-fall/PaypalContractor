@@ -16,7 +16,6 @@ os.environ.setdefault("PAYPAL_API_BASE_URL", "https://api-m.sandbox.paypal.com")
 os.environ.setdefault("PAYPAL_WEBHOOK_ID", "wh-test-id")
 
 import asyncio  # noqa: E402
-import time  # noqa: E402
 from collections.abc import Callable, Iterator  # noqa: E402
 from datetime import UTC, date, datetime, timedelta  # noqa: E402
 from decimal import Decimal  # noqa: E402
