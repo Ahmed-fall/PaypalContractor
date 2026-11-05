@@ -13,6 +13,8 @@ from __future__ import annotations
 import asyncio
 import importlib
 import importlib.util
+import inspect
+import logging
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -26,6 +28,8 @@ from ..schemas.contracts import GuardAction, GuardResult, LeashDecision, LeashPo
 from .explain import MAX_REASON_LEN, template_reason
 from .guard import evaluate_rules, parse_money
 from .policy import default_policy
+
+logger = logging.getLogger(__name__)
 
 
 class Explainer(Protocol):
@@ -54,6 +58,9 @@ PAYROLL_ACTIONS: frozenset[GuardAction] = frozenset(
     {GuardAction.PAY_TEAM_MEMBER, GuardAction.SEND_PAYROLL_BATCH}
 )
 EXPLAIN_TIMEOUT_S = 3.0
+# use_llm=False must be instant (template only), so that path never waits the LLM
+# budget: the invoice guard (H1) runs inside /simulator/pay.
+TEMPLATE_PATH_TIMEOUT_S = 0.25
 
 
 @dataclass(frozen=True)
@@ -147,6 +154,9 @@ class LeashService:
         if self._explainer is None:
             return fallback
         use_llm = action in PAYROLL_ACTIONS and decision != LeashDecision.ALLOW
+        timeout = (
+            self._timeout if use_llm else min(self._timeout, TEMPLATE_PATH_TIMEOUT_S)
+        )
         try:
             text = await asyncio.wait_for(
                 self._explainer(
@@ -156,9 +166,14 @@ class LeashService:
                     _json_safe(snapshot),
                     use_llm=use_llm,
                 ),
-                self._timeout,
+                timeout,
             )
-        except Exception:  # noqa: BLE001 - any explainer failure uses the template
+        except Exception as exc:  # noqa: BLE001 - any explainer failure uses the template
+            logger.warning(
+                "leash explainer failed (%s: %s); using the template",
+                type(exc).__name__,
+                str(exc)[:200],
+            )
             return fallback
         if isinstance(text, str) and 0 < len(text.strip()) <= MAX_REASON_LEN:
             return text.strip()
@@ -197,6 +212,32 @@ class LeashService:
         )
 
 
+def _matches_contract(fn: Any) -> bool:
+    """Reject an explainer every call would fail on (it would silently never run)."""
+    if not inspect.iscoroutinefunction(fn):
+        logger.warning("ai.leash.explain_decision must be async; using templates only")
+        return False
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):  # not introspectable: let calls decide
+        return True
+    takes_use_llm = any(
+        p.kind is inspect.Parameter.VAR_KEYWORD
+        or (
+            p.name == "use_llm"
+            and p.kind
+            in (inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        )
+        for p in params
+    )
+    if not takes_use_llm:
+        logger.warning(
+            "ai.leash.explain_decision does not accept the keyword use_llm "
+            "(Rev 2.3 R5); using templates only"
+        )
+    return takes_use_llm
+
+
 def _load_explainer() -> Explainer | None:
     """P2's ``explain_decision`` if ``..ai.leash`` exists, else None."""
     try:
@@ -206,7 +247,7 @@ def _load_explainer() -> Explainer | None:
             return None
         module = importlib.import_module(name)
         fn = getattr(module, "explain_decision", None)
-        return fn if callable(fn) else None
+        return fn if callable(fn) and _matches_contract(fn) else None
     except Exception:  # noqa: BLE001 - a broken optional module means no explainer
         return None
 
