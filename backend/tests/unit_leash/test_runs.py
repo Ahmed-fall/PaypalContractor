@@ -745,23 +745,23 @@ async def test_gross_grows_after_approval(demo: SessionMaker) -> None:
 async def test_guard_only_ask_approval_expires_on_amount_jump(
     demo: SessionMaker, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    real = runs.decide
+    real = service_module.evaluate_rules
 
-    async def amount_rule(action: Any, facts: dict[str, Any], subject_id: str) -> GuardResult:
-        res = await real(action, facts, subject_id)
+    def amount_rule(policy: Any, action: Any, facts: dict[str, Any]) -> Any:
+        decision, ids = real(policy, action, facts)
         if (
             facts.get("member_key") is not None
             and D(facts["amount"]) > D("150.00")
-            and res.decision == LeashDecision.ALLOW
+            and decision == LeashDecision.ALLOW
         ):
-            return res.model_copy(update={"decision": LeashDecision.ASK, "reason": "over 150"})
-        return res
+            return LeashDecision.ASK, ["R-150"]
+        return decision, ids
 
-    monkeypatch.setattr(runs, "decide", amount_rule)
+    monkeypatch.setattr(service_module, "evaluate_rules", amount_rule)
     run_id = await _prepared(demo)
     out = runs.get_run_out(run_id)
     sara = _line(out, "Sara")
-    assert sara.decision == LeashDecision.ASK and sara.flags == []
+    assert sara.decision == LeashDecision.ASK and sara.flags == ["R-150"]
     for line in out.lines:
         await runs.set_line_action(run_id, line.line_id, "APPROVED", None)
     assert len(await runs.lines_ready_to_send(run_id, ["PR-06"])) == 3

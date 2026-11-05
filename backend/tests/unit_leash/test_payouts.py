@@ -944,12 +944,16 @@ def test_poll_survives_a_busy_database(sf: SessionMaker, monkeypatch: pytest.Mon
 def test_cancel_during_reservation_leaves_the_run_unreserved(
     sf: SessionMaker, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import threading
     import time
 
     route = respx.post(PAYOUTS_URL).mock(return_value=_created())
     real_reserve = payouts._reserve
 
+    started = threading.Event()
+
     def slow_reserve(*args: Any, **kwargs: Any) -> Any:
+        started.set()
         time.sleep(0.3)
         return real_reserve(*args, **kwargs)
 
@@ -957,7 +961,8 @@ def test_cancel_during_reservation_leaves_the_run_unreserved(
 
     async def go() -> None:
         task = asyncio.ensure_future(payouts.send_payroll_batch(RUN_ID, _lines(), KEY))
-        await asyncio.sleep(0.1)
+        while not started.is_set():  # cancel only once the reservation is running
+            await asyncio.sleep(0.005)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task

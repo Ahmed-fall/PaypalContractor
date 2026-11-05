@@ -41,7 +41,7 @@ from backend.app.db.database import Base, get_db  # noqa: E402
 from backend.app.leash import models as lm  # noqa: E402
 from backend.app.leash import service as service_module  # noqa: E402
 from backend.app.leash.payroll import runs  # noqa: E402
-from backend.app.schemas.contracts import GuardAction, TeamMemberUpdate  # noqa: E402
+from backend.app.schemas.contracts import GuardAction, LeashDecision, TeamMemberUpdate  # noqa: E402
 from backend.app.leash.seed import seed_leash_demo  # noqa: E402
 from backend.app.leash.service import LeashService, configure  # noqa: E402
 from backend.app.leash.store import SqlDecisionLog, SqlPolicyProvider  # noqa: E402
@@ -1027,3 +1027,63 @@ def test_full_demo_end_to_end(ctx: Ctx) -> None:
     row = next(r for r in margin["rows"] if r["milestone_code"] == "MS-01")
     assert row["paid_to_team"] == "420.00" and row["margin"] == "430.00"
     assert row["payroll_status"] == "PAID"
+
+
+def _stub_default_ask(monkeypatch: pytest.MonkeyPatch, action: GuardAction) -> None:
+    real = service_module.evaluate_rules
+
+    def stub(policy: Any, act: GuardAction, facts: dict[str, Any]) -> Any:
+        if act == action:
+            return LeashDecision.ASK, ["DEFAULT"]
+        return real(policy, act, facts)
+
+    monkeypatch.setattr(service_module, "evaluate_rules", stub)
+
+
+@respx.mock
+def test_unapprovable_run_ask_never_passes_the_gate(
+    ctx: Ctx, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    route = respx.post(PAYOUTS_URL).mock(return_value=_created())
+    _stub_default_ask(monkeypatch, GuardAction.SEND_PAYROLL_BATCH)
+    run = _create_run(ctx)
+    omar = _line(run, "Omar")
+    after = ctx.patch(
+        f"/payroll/runs/{run['run_id']}/lines/{omar['line_id']}", json={"owner_action": "EXCLUDED"}
+    ).json()
+    assert after["run_decision"] == "ASK" and after["run_flags"] == ["DEFAULT"]
+    for flags in ([], ["DEFAULT"], ["DEFAULT", "PR-06"]):
+        r = _send(ctx, run["run_id"], flags)
+        assert r.status_code == 409, r.text
+        error = r.json()["error"]
+        assert error["code"] == "LEASH_ASK_UNRESOLVED"
+        assert (
+            error["message"] == "This payroll run could not be checked. Refresh it and try again."
+        )
+        assert error["details"] == {"open_asks": [], "open_run_flags": ["DEFAULT"]}
+    assert route.call_count == 0
+
+
+@respx.mock
+def test_unapprovable_line_ask_cannot_be_approved(
+    ctx: Ctx, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    route = respx.post(PAYOUTS_URL).mock(return_value=_created())
+    run = _create_run(ctx)
+    sara = _line(run, "Sara")
+    _stub_default_ask(monkeypatch, GuardAction.PAY_TEAM_MEMBER)
+    omar = _line(run, "Omar")
+    ctx.patch(
+        f"/payroll/runs/{run['run_id']}/lines/{omar['line_id']}", json={"owner_action": "EXCLUDED"}
+    )
+    r = ctx.patch(
+        f"/payroll/runs/{run['run_id']}/lines/{sara['line_id']}", json={"owner_action": "APPROVED"}
+    )
+    assert r.status_code == 409, r.text
+    assert r.json()["error"]["code"] == "LINE_NOT_CHECKED"
+    blocked = _send(ctx, run["run_id"], ["PR-06", "DEFAULT"])
+    assert blocked.status_code == 409
+    assert sara["line_id"] in [
+        a["line_id"] for a in blocked.json()["error"]["details"]["open_asks"]
+    ]
+    assert route.call_count == 0

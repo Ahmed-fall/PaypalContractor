@@ -112,6 +112,14 @@ def _visible_ids(*groups: Any) -> list[str]:
     return list(seen)
 
 
+def _ask_ids(*groups: Any, rule_ids: Any) -> list[str]:
+    """Visible ids of an ASK. DEFAULT (nothing approvable) is shown, never hidden."""
+    ids = _visible_ids(*groups, rule_ids)
+    if DEFAULT_RULE_ID in rule_ids or not ids:
+        ids.append(DEFAULT_RULE_ID)
+    return ids
+
+
 def _not_found(code: str, message: str) -> ApiError:
     return ApiError(404, code, message)
 
@@ -571,8 +579,9 @@ async def _check_and_snapshot(run_id: str) -> tuple[PayrollRunOut, dict[str, Che
 
     stale: set[str] = set()
     for ln, res in zip(inputs.lines, line_results, strict=True):
-        if ln.owner_action == "APPROVED" and not _approval_covers(
-            ln, checks[ln.line_id].flags, res.rule_ids
+        if ln.owner_action == "APPROVED" and (
+            DEFAULT_RULE_ID in res.rule_ids
+            or not _approval_covers(ln, checks[ln.line_id].flags, res.rule_ids)
         ):
             stale.add(ln.line_id)
             ln.owner_action = None  # new risk since the approval: the line is open again
@@ -614,7 +623,7 @@ async def _check_and_snapshot(run_id: str) -> tuple[PayrollRunOut, dict[str, Che
         reason = None if result.decision == LeashDecision.ALLOW else result.reason
         shown = checks[ln.line_id].flags
         if result.decision == LeashDecision.ASK:  # policy-only ASKs say why they wait
-            shown = tuple(_visible_ids(shown, result.rule_ids))
+            shown = tuple(_ask_ids(shown, rule_ids=result.rule_ids))
         outcome[ln.line_id] = (result.decision, result.decision_id, shown, reason)
         if result.decision == LeashDecision.ASK and ln.owner_action is None:
             open_ask = True
@@ -648,7 +657,10 @@ def _run_out(db: Session, run: PayrollRunRow) -> PayrollRunOut:
             decision = LeashDecision(drow.decision)
             check = drow.facts_json.get("payroll_check", {})
             rule_ids = drow.rule_ids_json if decision != LeashDecision.ALLOW else []
-            flags = _visible_ids(check.get("flags", []), rule_ids)
+            if decision == LeashDecision.ASK:
+                flags = _ask_ids(check.get("flags", []), rule_ids=rule_ids)
+            else:
+                flags = _visible_ids(check.get("flags", []), rule_ids)
     lines: list[PayrollLineOut] = []
     members: dict[str, TeamMemberRow] = {}
     for row in db.scalars(select(PayrollLineRow).where(PayrollLineRow.run_id == run.id)):
@@ -727,6 +739,12 @@ def _stamp_owner_action(
                 )
             decision_row = db.get(LeashDecisionRow, line.decision_id)
             rule_ids = list(decision_row.rule_ids_json) if decision_row is not None else []
+            if DEFAULT_RULE_ID in rule_ids or DEFAULT_RULE_ID in (line.flags_json or []):
+                raise ApiError(
+                    409,
+                    "LINE_NOT_CHECKED",
+                    "This line could not be checked, so it cannot be approved. Refresh it.",
+                )
         line.owner_action = owner_action
         line.owner_action_at = now
         # The approval covers this amount, these flags and these rules, nothing more.
@@ -794,6 +812,14 @@ async def lines_ready_locked(run_id: str, approve_run_flags: list[str]) -> Ready
         raise _not_sendable()
     if out.run_decision == LeashDecision.DENY:
         raise ApiError(409, "LEASH_DENIED", "Leash has denied this payroll run.")
+    if out.run_decision == LeashDecision.ASK and DEFAULT_RULE_ID in out.run_flags:
+        # Nothing the owner could approve: the run was never validly checked.
+        raise ApiError(
+            409,
+            "LEASH_ASK_UNRESOLVED",
+            "This payroll run could not be checked. Refresh it and try again.",
+            {"open_asks": [], "open_run_flags": [DEFAULT_RULE_ID]},
+        )
     open_asks = [
         {"line_id": ln.line_id, "flags": ln.flags}
         for ln in out.lines
