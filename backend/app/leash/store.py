@@ -184,10 +184,10 @@ class SqlRoster:
         for other in others:
             if other.payout_email == email:
                 msg = "another active member already uses this payout email"
-                raise RosterConflict(msg)
+                raise RosterConflict(msg, "email")
             if normalise_name(other.name) == key:
                 msg = "another active member already has this name"
-                raise RosterConflict(msg)
+                raise RosterConflict(msg, "name")
 
     def add(self, m: TeamMember) -> None:
         with self._sf() as db:
