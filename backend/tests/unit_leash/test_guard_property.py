@@ -191,3 +191,71 @@ async def test_unknown_facts_never_allow() -> None:
 
     await _run(check)
     assert unknown_seen > 0
+
+
+_FLAG_POOL = ["PR-01", "PR-1", "pr-01", "PR-08", " PR-01", "PR-07", "PR-00", "G-01"]
+_DECISIONS: list[Any] = [
+    "ALLOW", "allow", "ASK", "DENY", " ALLOW", True, 1, None,
+    LeashDecision.ALLOW, LeashDecision.ASK,
+]  # fmt: skip
+_PAYROLL = (GuardAction.PAY_TEAM_MEMBER, GuardAction.SEND_PAYROLL_BATCH)
+
+
+def _garbage_check(rng: random.Random, depth: int = 0) -> Any:
+    roll = rng.random()
+    if roll < 0.15:
+        return rng.choice([None, True, 0, 1.5, "ALLOW", [], (), object()])
+    if roll < 0.3 and depth < 2:
+        return {
+            "decision": _garbage_check(rng, depth + 1),
+            "flags": _garbage_check(rng, depth + 1),
+        }
+    check: dict[str, Any] = {
+        "decision": rng.choice(_DECISIONS),
+        "flags": rng.choice([list, tuple])(rng.sample(_FLAG_POOL, rng.randint(0, 2))),
+    }
+    if rng.random() < 0.1:
+        check["extra"] = 1
+    return check
+
+
+def _is_exact_allow(check: Any) -> bool:
+    return (
+        isinstance(check, dict)
+        and set(check) == {"decision", "flags"}
+        and isinstance(check["decision"], str)
+        and check["decision"] == "ALLOW"
+        and isinstance(check["flags"], list | tuple)
+        and len(check["flags"]) == 0
+    )
+
+
+def test_garbage_payroll_check_never_yields_allow() -> None:
+    from backend.app.schemas.contracts import LeashRule
+
+    rng = random.Random(20261105)
+    allows = tightened = 0
+    for i in range(ITERATIONS):
+        action = _PAYROLL[i % 2]
+        check = _garbage_check(rng)
+        policy = default_policy()
+        if rng.random() < 0.2:
+            policy.rules.append(
+                LeashRule(
+                    id="P-1", applies_to=action, when={}, outcome=LeashDecision.ASK,
+                    source_text="t",
+                )
+            )  # fmt: skip
+        decision, ids = evaluate_rules(policy, action, {"payroll_check": check})
+        extra = any(r.applies_to == action for r in policy.rules)
+        if decision == LeashDecision.ALLOW:
+            allows += 1
+            assert _is_exact_allow(check), check
+            assert not extra
+            assert ids == ["PAYROLL-CHECKS"]
+        elif _is_exact_allow(check):
+            tightened += 1
+            assert extra
+            assert decision == LeashDecision.ASK
+    assert allows > 0
+    assert tightened > 0

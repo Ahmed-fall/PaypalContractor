@@ -101,6 +101,7 @@ _SENTENCES: dict[str, dict[LeashDecision, str]] = {
             "so they can't be paid again."
         ),
     },
+    "PAYROLL-CHECKS": {LeashDecision.ALLOW: "All payroll checks passed."},
 }
 
 
@@ -113,6 +114,7 @@ _RULE_ACTIONS: dict[str, frozenset[GuardAction]] = {
     **{f"G-0{i}": _INVOICE for i in range(1, 6)},
     **{f"PR-0{i}": _LINE for i in (1, 2, 3, 4, 5, 7)},
     "PR-06": _RUN,
+    "PAYROLL-CHECKS": _LINE | _RUN,
 }
 # check_line uses one id (PR-02) for both hours cases and a line's decision is the
 # strictest flag, so DENY + PR-02 + another deny check cannot tell which case fired.
