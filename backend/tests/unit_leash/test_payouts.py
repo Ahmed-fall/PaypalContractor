@@ -888,3 +888,126 @@ def test_item_webhook_fills_batch_id_of_unknown_run(sf: SessionMaker) -> None:
     run = _run(sf)
     assert run.paypal_batch_id == "TNVNLATJ857QW"  # resource.payout_batch_id of the fixture
     assert _line(sf, "prl_0002").payout_status == "SUCCESS"
+
+
+# --- final-review fixes ------------------------------------------------------------------------
+
+
+def test_status_write_is_conditional_against_a_concurrent_terminal_write(
+    sf: SessionMaker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _sent_run(sf)
+    real_allowed = payouts_sync._allowed
+
+    def racing_allowed(current: str | None, new: str) -> bool:
+        ok = real_allowed(current, new)
+        with sf() as other:  # another writer lands SUCCESS after our read
+            row = other.get(lm.PayrollLineRow, "prl_0002")
+            assert row is not None
+            row.payout_status = "SUCCESS"
+            other.commit()
+        return ok
+
+    monkeypatch.setattr(payouts_sync, "_allowed", racing_allowed)
+    payouts_sync.apply_item_status("prl_0002", "FAILED")
+    assert _line(sf, "prl_0002").payout_status == "SUCCESS"
+
+
+@respx.mock
+def test_poll_survives_a_busy_database(sf: SessionMaker, monkeypatch: pytest.MonkeyPatch) -> None:
+    from sqlalchemy.exc import OperationalError
+
+    _sent_run(sf)
+    respx.get(f"{PAYOUTS_URL}/5UXD2E8A7EBQJ").mock(
+        return_value=httpx.Response(200, json=_batch_body("SUCCESS", "SUCCESS"))
+    )
+    real = payouts_sync._apply_batch_items
+    calls = {"n": 0}
+
+    def busy_once(items: Any) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OperationalError("UPDATE", {}, Exception("database is locked"))
+        real(items)
+
+    monkeypatch.setattr(payouts_sync, "_apply_batch_items", busy_once)
+
+    async def fake_sleep(_s: float) -> None:
+        return None
+
+    asyncio.run(payouts_sync.poll_batch(RUN_ID, interval_s=1, max_s=10, sleep=fake_sleep))
+    assert calls["n"] == 2
+    assert _run(sf).status == "PAID"
+
+
+@respx.mock
+def test_cancel_during_reservation_leaves_the_run_unreserved(
+    sf: SessionMaker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+
+    route = respx.post(PAYOUTS_URL).mock(return_value=_created())
+    real_reserve = payouts._reserve
+
+    def slow_reserve(*args: Any, **kwargs: Any) -> Any:
+        time.sleep(0.3)
+        return real_reserve(*args, **kwargs)
+
+    monkeypatch.setattr(payouts, "_reserve", slow_reserve)
+
+    async def go() -> None:
+        task = asyncio.ensure_future(payouts.send_payroll_batch(RUN_ID, _lines(), KEY))
+        await asyncio.sleep(0.1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(go())
+    assert route.call_count == 0
+    run = _run(sf)
+    assert run.sender_batch_id is None and run.idempotency_key is None
+    assert run.status == "CHECKED"
+    assert _line(sf, "prl_0002").payout_status is None
+    # and it can still be sent afterwards
+    assert _send("retry-key") == "5UXD2E8A7EBQJ"
+    assert route.call_count == 1
+
+
+def test_margin_pending_counts_only_pending_and_open_invoices_use_contract_currency(
+    sf: SessionMaker,
+) -> None:
+    _sent_run(sf)
+    with sf() as db:
+        db.get(lm.PayrollLineRow, "prl_0002").payout_status = "UNCLAIMED"  # type: ignore[union-attr]
+        db.add(
+            dm.Discrepancy(
+                id="dsc_1",
+                milestone_id="ms_01",
+                capture_id="cap_01",
+                discrepancy_type="SHORT_PAY",
+                shortfall_amount=D("150.00"),
+                penalty_amount=D("0.00"),
+                total_remediation_amount=D("150.00"),
+                ai_audit_summary="s",
+            )
+        )
+        db.flush()
+        for n, (cur, amount) in enumerate((("USD", "150.00"), ("EUR", "999.00"))):
+            db.add(
+                dm.RemediationInvoice(
+                    id=f"inv_{n}",
+                    discrepancy_id="dsc_1",
+                    attempt=n + 1,
+                    paypal_invoice_id=f"INV2-{n}",
+                    paypal_invoice_number=f"FD-{n}",
+                    recipient_email="client@example.com",
+                    total_amount=D(amount),
+                    currency=cur,
+                    status="SENT",
+                    paypal_request_id=f"req-{n}",
+                )
+            )
+        db.commit()
+        row = runs.margin_rows(db).rows[0]
+    assert row.pending_to_team == D("200.00")  # Youssef PENDING only; Sara is UNCLAIMED
+    assert row.invoiced_open == D("150.00")  # the EUR invoice is not in this USD contract

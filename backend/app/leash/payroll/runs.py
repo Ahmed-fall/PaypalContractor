@@ -154,12 +154,16 @@ def cash_in_for_milestone(db: Session, milestone_id: str) -> Decimal:
     return total.quantize(_CENT, rounding=ROUND_HALF_UP)
 
 
-def _invoiced_open(db: Session, milestone_id: str) -> Decimal:
+def _invoiced_open(db: Session, milestone_id: str, currency: str) -> Decimal:
     total = _ZERO
     for amount in db.scalars(
         select(RemediationInvoice.total_amount)
         .join(Discrepancy, Discrepancy.id == RemediationInvoice.discrepancy_id)
-        .where(Discrepancy.milestone_id == milestone_id, RemediationInvoice.status == "SENT")
+        .where(
+            Discrepancy.milestone_id == milestone_id,
+            RemediationInvoice.status == "SENT",
+            RemediationInvoice.currency == currency,
+        )
     ):
         total += amount
     return total
@@ -859,6 +863,8 @@ def margin_rows(db: Session) -> MarginResponse:
     sum_cash = sum_paid = _ZERO
     for ms in milestones:
         cash_in = cash_in_for_milestone(db, ms.id)
+        contract = db.get(Contract, ms.contract_id)
+        currency = contract.currency if contract is not None else "USD"
         paid = pending = _ZERO
         latest: PayrollRunRow | None = None
         runs = db.scalars(
@@ -872,7 +878,7 @@ def margin_rows(db: Session) -> MarginResponse:
             for ln in db.scalars(select(PayrollLineRow).where(PayrollLineRow.run_id == run.id)):
                 if ln.payout_status == "SUCCESS":
                     paid += ln.gross
-                elif ln.payout_status in ("PENDING", "UNCLAIMED"):
+                elif ln.payout_status == "PENDING":
                     pending += ln.gross
         margin = cash_in - paid
         pct = (
@@ -885,7 +891,7 @@ def margin_rows(db: Session) -> MarginResponse:
                 milestone_id=ms.id,
                 milestone_code=ms.code,
                 cash_in=cash_in,
-                invoiced_open=_invoiced_open(db, ms.id),
+                invoiced_open=_invoiced_open(db, ms.id, currency),
                 paid_to_team=paid,
                 pending_to_team=pending,
                 margin=margin,

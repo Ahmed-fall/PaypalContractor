@@ -230,6 +230,31 @@ def _unknown(run_id: str, line_ids: list[str], reason: str) -> None:
     logger.error("payroll.batch_unknown", extra={"run_id": run_id, "reason": reason})
 
 
+async def _reserve_shielded(
+    run_id: str,
+    lines: list[PayrollLineOut],
+    idempotency_key: str,
+    checked: dict[str, runs.CheckedPayee],
+) -> _Reserved:
+    """Reserve in a thread; if the request is cancelled meanwhile, wait for it, then release.
+
+    A cancelled ``to_thread`` keeps running, so without this a run could be left reserved,
+    unsent and never POSTed (every later send would answer 409).
+    """
+    task = asyncio.ensure_future(
+        asyncio.to_thread(_reserve, run_id, lines, idempotency_key, checked)
+    )
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        try:
+            await task
+        except Exception:  # the reservation failed, so there is nothing to release
+            raise asyncio.CancelledError from None
+        await asyncio.shield(asyncio.to_thread(_release, run_id))
+        raise
+
+
 async def send_payroll_batch(
     run_id: str,
     lines: list[PayrollLineOut],
@@ -255,7 +280,7 @@ async def send_payroll_batch(
             raise _not_sendable(_CHANGED)
         lines = gate.lines
         line_ids = [ln.line_id for ln in lines]
-        reserved = await asyncio.to_thread(_reserve, run_id, lines, idempotency_key, gate.checked)
+        reserved = await _reserve_shielded(run_id, lines, idempotency_key, gate.checked)
         try:
             result = await paypal_request(
                 "POST", _PAYOUTS_PATH, request_id=reserved.request_id, json_body=reserved.body

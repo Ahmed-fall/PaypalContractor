@@ -14,7 +14,8 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select, update
+from sqlalchemy.exc import OperationalError
 
 from ...config import get_settings
 from ...db.database import utcnow
@@ -57,6 +58,15 @@ _EVENT_STATUS = {
 
 _tasks: set[asyncio.Task[None]] = set()
 _pollers: dict[str, asyncio.Task[None]] = {}
+
+
+# Statuses a line may leave for each target; None (never sent) is always allowed.
+_SOURCES: dict[str, tuple[str, ...]] = {
+    "PENDING": ("PENDING",),
+    "UNCLAIMED": ("PENDING",),
+    "SUCCESS": ("PENDING", "UNCLAIMED"),
+    "FAILED": ("PENDING", "UNCLAIMED"),
+}
 
 
 def _allowed(current: str | None, new: str) -> bool:
@@ -106,11 +116,28 @@ def apply_item_status(
             run.paypal_batch_id = payout_batch_id[:64]  # reconciles an UNKNOWN run
             db.commit()
         if _allowed(line.payout_status, mapped):
-            line.paypal_transaction_status = transaction_status.upper()[:16]
-            line.payout_status = mapped
-            if payout_item_id and line.payout_item_id is None:
-                line.payout_item_id = payout_item_id[:64]
-            if mapped == "SUCCESS":
+            # Conditional write: a concurrent terminal status written since the read wins.
+            values: dict[str, Any] = {
+                "paypal_transaction_status": transaction_status.upper()[:16],
+                "payout_status": mapped,
+            }
+            if payout_item_id:
+                values["payout_item_id"] = func.coalesce(
+                    PayrollLineRow.payout_item_id, payout_item_id[:64]
+                )
+            written = db.execute(
+                update(PayrollLineRow)
+                .where(
+                    PayrollLineRow.id == sender_item_id,
+                    or_(
+                        PayrollLineRow.payout_status.is_(None),
+                        PayrollLineRow.payout_status.in_(_SOURCES[mapped]),
+                    ),
+                )
+                .values(**values)
+                .execution_options(synchronize_session=False)
+            )
+            if written.rowcount == 1 and mapped == "SUCCESS":  # type: ignore[attr-defined]
                 member = db.get(TeamMemberRow, line.team_member_id)
                 if member is not None and member.first_paid_at is None:
                     member.first_paid_at = utcnow()
@@ -182,6 +209,30 @@ def _poll_state(run_id: str) -> tuple[str | None, bool]:
         return run.paypal_batch_id, settled
 
 
+async def _poll_once(run_id: str) -> bool:
+    """One poll tick; True when the run is settled (or cannot be polled) and polling can stop."""
+    batch_id, settled = await asyncio.to_thread(_poll_state, run_id)
+    if settled:
+        return True
+    if batch_id is None:
+        logger.warning("payouts.poll_no_batch_id", extra={"run_id": run_id})
+        return True
+    try:
+        batch = await get_batch(batch_id)
+    except (PayPalAPIError, PayPalUnavailable, PayPalAuthError):
+        logger.warning("payouts.poll_failed", extra={"run_id": run_id}, exc_info=True)
+        return False
+    await asyncio.to_thread(_apply_batch_items, batch.get("items"))
+    header = batch.get("batch_header")
+    status = header.get("batch_status") if isinstance(header, dict) else None
+    if isinstance(status, str):
+        await asyncio.to_thread(
+            _set_batch_status, paypal_batch_id=batch_id, sender_batch_id=None, batch_status=status
+        )
+    _, settled = await asyncio.to_thread(_poll_state, run_id)
+    return settled
+
+
 async def poll_batch(
     run_id: str,
     *,
@@ -197,30 +248,11 @@ async def poll_batch(
     now = clock or asyncio.get_running_loop().time
     started = now()
     while True:
-        batch_id, settled = await asyncio.to_thread(_poll_state, run_id)
-        if settled:
-            return
-        if batch_id is None:
-            logger.warning("payouts.poll_no_batch_id", extra={"run_id": run_id})
-            return
         try:
-            batch = await get_batch(batch_id)
-        except (PayPalAPIError, PayPalUnavailable, PayPalAuthError):
-            logger.warning("payouts.poll_failed", extra={"run_id": run_id}, exc_info=True)
-        else:
-            await asyncio.to_thread(_apply_batch_items, batch.get("items"))
-            header = batch.get("batch_header")
-            status = header.get("batch_status") if isinstance(header, dict) else None
-            if isinstance(status, str):
-                await asyncio.to_thread(
-                    _set_batch_status,
-                    paypal_batch_id=batch_id,
-                    sender_batch_id=None,
-                    batch_status=status,
-                )
-            _, settled = await asyncio.to_thread(_poll_state, run_id)
-            if settled:
+            if await _poll_once(run_id):
                 return
+        except OperationalError:  # e.g. SQLite busy: try again on the next tick
+            logger.warning("payouts.poll_db_busy", extra={"run_id": run_id}, exc_info=True)
         if now() - started >= limit:
             return
         await sleep(interval)
