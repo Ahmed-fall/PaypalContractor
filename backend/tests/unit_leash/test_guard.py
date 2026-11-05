@@ -466,7 +466,10 @@ def test_rules_for_other_actions_are_ignored() -> None:
         rule("A-1", {"amount_lte": "100.00"}, ALLOW),
     )
     assert evaluate_rules(pol, INVOICE, facts()) == (ASK, DEFAULT)
-    assert evaluate_rules(pol, GuardAction.PAY_TEAM_MEMBER, facts()) == (ASK, ["P-1"])
+    assert evaluate_rules(pol, GuardAction.PAY_TEAM_MEMBER, facts()) == (
+        ASK,
+        ["DEFAULT", "P-1"],
+    )
 
 
 def test_policy_g05_is_not_duplicated() -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Any
 
 import pytest
@@ -32,6 +33,40 @@ def rule(
     return LeashRule(
         id=rid, applies_to=action, when=when, outcome=outcome, source_text="t"
     )
+
+
+class LyingStr(str):
+    """Real value ASK, but equal to everything and hashing like ALLOW."""
+
+    def __eq__(self, other: object) -> bool:
+        return True
+
+    def __hash__(self) -> int:
+        return hash("ALLOW")
+
+
+class UnhashableStr(str):
+    __hash__ = None  # type: ignore[assignment]
+
+
+class FakeDecision(str, Enum):
+    ALLOW = "ALLOW"
+
+
+class HiddenKeyDict(dict[str, Any]):
+    def __iter__(self) -> Any:
+        return iter(["decision", "flags"])
+
+    def keys(self) -> Any:
+        return ["decision", "flags"]
+
+
+class FlagTuple(tuple[str, ...]):
+    pass
+
+
+class FlagStr(str):
+    pass
 
 
 def chk(decision: Any, flags: Any) -> dict[str, Any]:
@@ -83,6 +118,13 @@ BAD_CHECKS: list[Any] = [
     {"decision": "ASK", "flags": [1]},
     {"decision": "ASK", "flags": ["PR-01", "PR-01"]},
     {"decision": "ASK", "flags": ["G-01"]},
+    {"decision": LyingStr("ASK"), "flags": []},
+    {"decision": FakeDecision.ALLOW, "flags": []},
+    HiddenKeyDict(decision="ALLOW", flags=[], extra=1),
+    {"decision": "ALLOW", "flags": FlagTuple()},
+    {"decision": "ASK", "flags": [UnhashableStr("PR-01")]},
+    {"decision": "ASK", "flags": [FlagStr("PR-01")]},
+    {"decision": FlagStr("ALLOW"), "flags": []},
 ]
 
 
@@ -160,7 +202,11 @@ def test_reserved_payroll_checks_id_in_policy_is_ignored() -> None:
 
 def test_policy_ask_without_check_unchanged() -> None:
     policy = pol(rule("P-1", {}, ASK, LINE))
-    assert evaluate_rules(policy, LINE, {}) == (ASK, ["P-1"])
+    assert evaluate_rules(policy, LINE, {}) == (ASK, ["DEFAULT", "P-1"])
+    bad = {"payroll_check": {"decision": "ALLOW", "flags": ["PR-01"]}}
+    assert evaluate_rules(policy, RUN, bad) == (ASK, ["DEFAULT"])  # no RUN rule
+    deny = pol(rule("P-2", {}, DENY, LINE))
+    assert evaluate_rules(deny, LINE, {}) == (DENY, ["P-2"])
 
 
 def test_does_not_mutate_facts() -> None:

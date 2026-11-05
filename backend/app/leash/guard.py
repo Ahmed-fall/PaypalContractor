@@ -172,18 +172,19 @@ def _payroll_check(
     if action not in PAYROLL_ACTIONS:
         return None
     check = facts.get("payroll_check")
-    if not isinstance(check, dict) or set(check) != {"decision", "flags"}:
+    # Exact types only: a subclass can lie about its value, hash or keys.
+    if type(check) is not dict or set(check) != {"decision", "flags"}:
         return None
     raw, flags = check["decision"], check["flags"]
-    if isinstance(raw, LeashDecision):
+    if type(raw) is LeashDecision:
         decision = raw
-    elif isinstance(raw, str) and raw in {d.value for d in LeashDecision}:
+    elif type(raw) is str and raw in {d.value for d in LeashDecision}:
         decision = LeashDecision(raw)
     else:
         return None
-    if not isinstance(flags, list | tuple):
+    if type(flags) not in (list, tuple):
         return None
-    if not all(isinstance(f, str) and _FLAG.fullmatch(f) for f in flags):
+    if not all(type(f) is str and _FLAG.fullmatch(f) for f in flags):
         return None
     if len(set(flags)) != len(flags):
         return None
@@ -212,4 +213,6 @@ def evaluate_rules(
         final = max([base[0], *(r.outcome for r in matched)], key=_RANK.__getitem__)
     ids = list(base[1]) if base is not None and base[0] == final else []
     ids.extend(r.id for r in matched if r.outcome == final)
+    if base is None and action in PAYROLL_ACTIONS and final == LeashDecision.ASK:
+        ids.insert(0, DEFAULT_RULE_ID)  # a missing/invalid check stays visible
     return final, list(dict.fromkeys(ids))
