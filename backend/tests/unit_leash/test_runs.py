@@ -603,34 +603,6 @@ async def test_failed_items_may_be_paid_again(demo: SessionMaker) -> None:
 
 
 @pytest.mark.asyncio
-async def test_stale_check_cannot_bypass_pr06_approval(
-    demo: SessionMaker, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    run_id = await _prepared(demo)
-    omar = _line(runs.get_run_out(run_id), "Omar")
-    real = runs._persist_check
-    calls = {"n": 0}
-
-    def slow_first(*args: Any) -> None:
-        calls["n"] += 1
-        if calls["n"] == 1:
-            time.sleep(0.4)  # the EXCLUDED click's check is still in flight
-        real(*args)
-
-    monkeypatch.setattr(runs, "_persist_check", slow_first)
-    first = asyncio.create_task(runs.set_line_action(run_id, omar.line_id, "EXCLUDED", None))
-    await asyncio.sleep(0.15)
-    second = asyncio.create_task(runs.set_line_action(run_id, omar.line_id, "APPROVED", None))
-    await asyncio.sleep(0)
-    gate = asyncio.create_task(runs.lines_ready_to_send(run_id, []))
-    done = await asyncio.gather(first, second, gate, return_exceptions=True)
-
-    assert isinstance(done[2], ApiError)
-    assert done[2].code == "LEASH_ASK_UNRESOLVED"
-    assert (done[2].details or {})["open_run_flags"] == ["PR-06"]
-
-
-@pytest.mark.asyncio
 async def test_approval_expires_when_the_email_changes_again(demo: SessionMaker) -> None:
     run_id = await _prepared(demo)
     omar = _line(runs.get_run_out(run_id), "Omar")
@@ -726,3 +698,133 @@ def test_roster_conflict_kind_maps_to_codes(sf: SessionMaker) -> None:
                 TeamMemberCreate(name="LINA", payout_email="b@example.com", hourly_rate=D("30.00")),
             )
     assert (same_name.value.status_code, same_name.value.code) == (409, "MEMBER_NAME_IN_USE")
+
+
+# --- fix round 2 -----------------------------------------------------------------------
+
+
+def _add_hours(demo: SessionMaker, name: str, hours: str, day: int, entry_id: str) -> None:
+    with demo() as db:
+        upload = db.scalars(select(lm.TimesheetUploadRow)).first()
+        member = db.scalars(select(lm.TeamMemberRow).where(lm.TeamMemberRow.name == name)).one()
+        assert upload is not None
+        db.add(
+            lm.TimesheetEntryRow(
+                id=entry_id,
+                upload_id=upload.id,
+                team_member_id=member.id,
+                raw_member_name=name,
+                work_date=date(2026, 11, day),
+                hours=D(hours),
+                milestone_code="MS-01",
+            )
+        )
+        db.commit()
+
+
+@pytest.mark.asyncio
+async def test_gross_grows_after_approval(demo: SessionMaker) -> None:
+    run_id = await _prepared(demo)
+    omar = _line(runs.get_run_out(run_id), "Omar")
+    await runs.set_line_action(run_id, omar.line_id, "APPROVED", None)
+    assert len(await runs.lines_ready_to_send(run_id, ["PR-06"])) == 3  # unchanged: still holds
+
+    _add_hours(demo, "Omar", "6.00", 6, "tse_p1")
+    with pytest.raises(ApiError) as caught:
+        await runs.lines_ready_to_send(run_id, ["PR-06"])
+    assert caught.value.code == "LEASH_ASK_UNRESOLVED"
+    asks = (caught.value.details or {})["open_asks"]
+    assert [a["line_id"] for a in asks] == [omar.line_id]
+    out = runs.get_run_out(run_id)
+    assert _line(out, "Omar").owner_action is None and _line(out, "Omar").gross == D("450.00")
+    with demo() as db:  # the owner row keeps the approved amount
+        row = db.scalars(
+            select(lm.LeashDecisionRow).where(lm.LeashDecisionRow.actor == "owner")
+        ).one()
+        assert row.amount == D("300.00")
+
+
+@pytest.mark.asyncio
+async def test_guard_only_ask_approval_expires_on_amount_jump(
+    demo: SessionMaker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = runs.decide
+
+    async def amount_rule(action: Any, facts: dict[str, Any], subject_id: str) -> GuardResult:
+        res = await real(action, facts, subject_id)
+        if (
+            facts.get("member_key") is not None
+            and D(facts["amount"]) > D("150.00")
+            and res.decision == LeashDecision.ALLOW
+        ):
+            return res.model_copy(update={"decision": LeashDecision.ASK, "reason": "over 150"})
+        return res
+
+    monkeypatch.setattr(runs, "decide", amount_rule)
+    run_id = await _prepared(demo)
+    out = runs.get_run_out(run_id)
+    sara = _line(out, "Sara")
+    assert sara.decision == LeashDecision.ASK and sara.flags == []
+    for line in out.lines:
+        await runs.set_line_action(run_id, line.line_id, "APPROVED", None)
+    assert len(await runs.lines_ready_to_send(run_id, ["PR-06"])) == 3
+
+    _add_hours(demo, "Sara", "8.00", 7, "tse_p2")
+    _add_hours(demo, "Sara", "8.00", 8, "tse_p3")
+    with pytest.raises(ApiError) as caught:
+        await runs.lines_ready_to_send(run_id, ["PR-06"])
+    assert [a["line_id"] for a in (caught.value.details or {})["open_asks"]] == [sara.line_id]
+
+
+@pytest.mark.asyncio
+async def test_approving_an_unchecked_line_is_refused(demo: SessionMaker) -> None:
+    prepared = await asyncio.to_thread(runs._prepare_run, "ms_01")  # no check yet
+    assert prepared is not None
+    run_id = prepared[0]
+    omar = _line(runs.get_run_out(run_id), "Omar")
+
+    with pytest.raises(ApiError) as caught:
+        await runs.set_line_action(run_id, omar.line_id, "APPROVED", None)
+    assert (caught.value.status_code, caught.value.code) == (409, "LINE_NOT_CHECKED")
+    assert _line(runs.get_run_out(run_id), "Omar").owner_action is None
+
+    out = await runs.set_line_action(run_id, omar.line_id, "EXCLUDED", None)
+    assert _line(out, "Omar").owner_action == "EXCLUDED"
+
+
+@pytest.mark.asyncio
+async def test_real_interleaving_blocked_explainer(
+    demo: SessionMaker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hold the EXCLUDED click's check inside decide() while APPROVED and the gate try to run."""
+    run_id = await _prepared(demo)
+    omar = _line(runs.get_run_out(run_id), "Omar")
+    real = runs.decide
+    release = asyncio.Event()
+    entered = asyncio.Event()
+    armed = {"v": True}
+
+    async def blocking(action: Any, facts: dict[str, Any], subject_id: str) -> GuardResult:
+        if armed["v"] and facts.get("member_key") is not None:
+            armed["v"] = False
+            entered.set()
+            await release.wait()
+        return await real(action, facts, subject_id)
+
+    monkeypatch.setattr(runs, "decide", blocking)
+    first = asyncio.create_task(runs.set_line_action(run_id, omar.line_id, "EXCLUDED", None))
+    await entered.wait()
+    second = asyncio.create_task(runs.set_line_action(run_id, omar.line_id, "APPROVED", None))
+    gate = asyncio.create_task(runs.lines_ready_to_send(run_id, []))
+    await asyncio.sleep(0.3)
+    progressed = second.done() or gate.done()
+    with demo() as db:
+        row = db.get(lm.PayrollLineRow, omar.line_id)
+        assert row is not None
+        stamped = row.owner_action
+    release.set()
+    done = await asyncio.gather(first, second, gate, return_exceptions=True)
+
+    assert not progressed and stamped == "EXCLUDED"  # APPROVED waited for the lock
+    assert isinstance(done[2], ApiError)
+    assert (done[2].details or {})["open_run_flags"] == ["PR-06"]

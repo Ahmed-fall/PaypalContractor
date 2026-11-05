@@ -300,7 +300,7 @@ class _LineIn:
     gross: Decimal
     owner_action: str | None
     owner_action_at: datetime | None
-    owner_flags: tuple[str, ...]
+    owner_snapshot: dict[str, Any] | None
     email_changed_at: datetime | None
 
 
@@ -395,7 +395,7 @@ def _gather_inputs(run_id: str) -> _Inputs:
                     gross,
                     row.owner_action,
                     aware(row.owner_action_at),
-                    tuple(row.owner_flags_json or ()),
+                    row.owner_flags_json if isinstance(row.owner_flags_json, dict) else None,
                     aware(member.email_changed_at) if member is not None else None,
                 )
             )
@@ -448,9 +448,18 @@ def _persist_check(
         db.commit()
 
 
-def _approval_covers(line: _LineIn, flags: tuple[str, ...]) -> bool:
-    """An APPROVED action holds only for the risk the owner saw when approving."""
-    if line.owner_action_at is None or not set(flags) <= set(line.owner_flags):
+def _approval_covers(line: _LineIn, flags: tuple[str, ...], rule_ids: list[str]) -> bool:
+    """An APPROVED action holds only for the amount and risk the owner saw."""
+    snap = line.owner_snapshot
+    if line.owner_action_at is None or snap is None:
+        return False
+    try:
+        same_gross = Decimal(str(snap["gross"])) == line.gross
+        flags_ok = set(flags) <= set(snap["flags"])
+        rules_ok = set(rule_ids) <= set(snap["rule_ids"])
+    except (KeyError, ArithmeticError, TypeError):
+        return False
+    if not (same_gross and flags_ok and rules_ok):
         return False
     return line.email_changed_at is None or line.email_changed_at <= line.owner_action_at
 
@@ -498,8 +507,10 @@ async def _check_run_locked(run_id: str) -> PayrollRunOut:
     )
 
     stale: set[str] = set()
-    for ln in inputs.lines:
-        if ln.owner_action == "APPROVED" and not _approval_covers(ln, checks[ln.line_id].flags):
+    for ln, res in zip(inputs.lines, line_results, strict=True):
+        if ln.owner_action == "APPROVED" and not _approval_covers(
+            ln, checks[ln.line_id].flags, res.rule_ids
+        ):
             stale.add(ln.line_id)
             ln.owner_action = None  # new risk since the approval: the line is open again
     excluded = {ln.member_key for ln in inputs.lines if ln.owner_action == "EXCLUDED"}
@@ -642,9 +653,24 @@ def _stamp_owner_action(
     """Validate, then stamp the owner action; returns the line's gross."""
     with session_factory() as db:
         run, line = _validated_line(db, run_id, line_id)
+        rule_ids: list[str] = []
+        if owner_action == "APPROVED":
+            if line.decision_id is None:
+                raise ApiError(
+                    409,
+                    "LINE_NOT_CHECKED",
+                    "This line is still being checked. Refresh and try again.",
+                )
+            decision_row = db.get(LeashDecisionRow, line.decision_id)
+            rule_ids = list(decision_row.rule_ids_json) if decision_row is not None else []
         line.owner_action = owner_action
         line.owner_action_at = now
-        line.owner_flags_json = list(line.flags_json or [])
+        # The approval covers this amount, these flags and these rules, nothing more.
+        line.owner_flags_json = {
+            "gross": _money(line.gross),
+            "flags": list(line.flags_json or []),
+            "rule_ids": rule_ids,
+        }
         run.approved_at = None  # any change re-opens the run flags
         db.commit()
         return line.gross
