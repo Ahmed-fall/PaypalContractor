@@ -6,12 +6,17 @@
 import { request } from "../../api/client";
 import type {
   LeashPolicy,
+  LedgerResponse,
+  PayrollRunCreate,
   PayrollRunOut,
   PolicyActivateResponse,
   PolicyCompileResponse,
   TeamMemberCreate,
   TeamMemberOut,
   TeamMemberUpdate,
+  TimesheetMappingConfirm,
+  TimesheetParsed,
+  TimesheetUploadResponse,
 } from "../../types/contracts";
 
 /** Add a team member. Quiet: the screen shows 409/422 errors beside the form. */
@@ -41,3 +46,21 @@ export const compilePolicyQuiet = (text: string) =>
 /** Make a saved draft the active policy. Quiet: 409s are shown on the Rules screen. */
 export const activatePolicyQuiet = (version: number) =>
   request<PolicyActivateResponse>("POST", "/leash/policy/activate", { body: { version }, quiet: true });
+
+/** Upload a timesheet. Quiet: 413/415/422 and duplicate uploads are shown beside the file picker. */
+export const uploadTimesheetQuiet = (file: File) => {
+  const form = new FormData();
+  form.append("file", file);
+  return request<TimesheetUploadResponse>("POST", "/leash/timesheets", { form, quiet: true });
+};
+
+/** Confirm which column is which. Quiet: 422 (missing field) and 409 are shown in the mapping dialog. */
+export const confirmTimesheetMappingQuiet = (uploadId: string, body: TimesheetMappingConfirm) =>
+  request<TimesheetParsed>("POST", `/leash/timesheets/${encodeURIComponent(uploadId)}/mapping`, { body, quiet: true });
+
+/** Prepare a payroll run. Quiet: 404 and 409 MAPPING_REQUIRED are shown beside the button. */
+export const createPayrollRunQuiet = (body: PayrollRunCreate) =>
+  request<PayrollRunOut>("POST", "/leash/payroll/runs", { body, quiet: true });
+
+/** The ledger, for the milestone list. Quiet: the card shows its own load error. */
+export const ledgerQuiet = () => request<LedgerResponse>("GET", "/ledger", { quiet: true });

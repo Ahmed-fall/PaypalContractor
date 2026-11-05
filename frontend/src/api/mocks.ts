@@ -133,6 +133,7 @@ export function setMockLatency(ms: number): void {
 export function resetMockState(): void {
   state = seed();
   payrollMock = { run: null, sentGets: 0 };
+  pendingUploadId = null;
   teamMock = null;
   policyMock = { active: null, latest: 0, drafts: {} };
   try {
@@ -686,6 +687,17 @@ function patchMember(req: TransportRequest, id: string): TransportResponse {
 }
 
 let payrollMock: { run: PayrollRunOut | null; sentGets: number } = { run: null, sentGets: 0 };
+/** Like the real backend: an upload waiting for its column mapping blocks run creation (409 MAPPING_REQUIRED). */
+let pendingUploadId: string | null = null;
+
+function createRunMock(r: TransportRequest): TransportResponse {
+  const milestoneId = (r.body as { milestone_id?: string | null } | null)?.milestone_id ?? null;
+  if (!state.rows.some((row) => row.milestone_id === milestoneId)) return fail(404, "NOT_FOUND", "Milestone not found.");
+  if (pendingUploadId) {
+    return fail(409, "MAPPING_REQUIRED", "A timesheet still needs its column mapping.", { upload_id: pendingUploadId });
+  }
+  return leashFixture("payroll_run_awaiting_approval.json", 201);
+}
 
 function currentRun(): PayrollRunOut | null {
   if (!payrollMock.run) payrollMock.run = pick<PayrollRunOut>(leashFixtures, "payroll_run_awaiting_approval.json");
@@ -849,15 +861,24 @@ const routes: Array<[string, RegExp, Handler]> = [
     return ok(m, 201);
   }],
   ["PATCH", /^\/leash\/team\/([^/]+)$/, (r, [id]) => patchMember(r, decodeURIComponent(id))],
-  ["POST", /^\/leash\/timesheets$/, () => leashFixture("timesheet_mapping_required.json", 201)],
-  ["POST", /^\/leash\/timesheets\/([^/]+)\/mapping$/, () => leashFixture("timesheet_parsed.json")],
-  ["POST", /^\/leash\/timesheets\/([^/]+)\/discard$/, (_r, [id]) =>
-    ok({ upload_id: decodeURIComponent(id), status: "REJECTED" })],
+  ["POST", /^\/leash\/timesheets$/, () => {
+    const res = leashFixture("timesheet_mapping_required.json", 201);
+    pendingUploadId = (res.body as { upload_id?: string } | null)?.upload_id ?? null;
+    return res;
+  }],
+  ["POST", /^\/leash\/timesheets\/([^/]+)\/mapping$/, () => {
+    pendingUploadId = null;
+    return leashFixture("timesheet_parsed.json");
+  }],
+  ["POST", /^\/leash\/timesheets\/([^/]+)\/discard$/, (_r, [id]) => {
+    pendingUploadId = null;
+    return ok({ upload_id: decodeURIComponent(id), status: "REJECTED" });
+  }],
   ["GET", /^\/leash\/payroll\/runs$/, () => {
     const run = currentRun();
     return ok(run ? [run] : []);
   }],
-  ["POST", /^\/leash\/payroll\/runs$/, () => leashFixture("payroll_run_awaiting_approval.json", 201)],
+  ["POST", /^\/leash\/payroll\/runs$/, (r) => createRunMock(r)],
   ["GET", /^\/leash\/payroll\/runs\/([^/]+)$/, () => getRun()],
   ["PATCH", /^\/leash\/payroll\/runs\/([^/]+)\/lines\/([^/]+)$/, (r, [, lineId]) => patchRunLine(r, decodeURIComponent(lineId))],
   ["POST", /^\/leash\/payroll\/runs\/([^/]+)\/send$/, () => sendRun()],
