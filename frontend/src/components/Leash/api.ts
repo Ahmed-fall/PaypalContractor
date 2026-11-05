@@ -5,10 +5,14 @@
  */
 import { request } from "../../api/client";
 import type {
+  ActiveLeashPolicy,
   LeashPolicy,
   LedgerResponse,
+  PayrollLineUpdate,
   PayrollRunCreate,
   PayrollRunOut,
+  PayrollSendRequest,
+  PayrollSendResponse,
   PolicyActivateResponse,
   PolicyCompileResponse,
   TeamMemberCreate,
@@ -64,3 +68,19 @@ export const createPayrollRunQuiet = (body: PayrollRunCreate) =>
 
 /** The ledger, for the milestone list. Quiet: the card shows its own load error. */
 export const ledgerQuiet = () => request<LedgerResponse>("GET", "/ledger", { quiet: true });
+
+const runPath = (runId: string) => `/leash/payroll/runs/${encodeURIComponent(runId)}`;
+
+/** One payroll run. Quiet: the run screen shows load and polling errors itself. */
+export const payrollRunQuiet = (runId: string) => request<PayrollRunOut>("GET", runPath(runId), { quiet: true });
+
+/** Approve or exclude one line; returns the whole re-checked run. Quiet: 409s show on the row. */
+export const updatePayrollLineQuiet = (runId: string, lineId: string, body: PayrollLineUpdate) =>
+  request<PayrollRunOut>("PATCH", `${runPath(runId)}/lines/${encodeURIComponent(lineId)}`, { body, quiet: true });
+
+/** Pay the team (one PayPal Payouts batch). Quiet: 409 open asks and 503 are shown beside Pay team. */
+export const sendPayrollQuiet = (runId: string, body: PayrollSendRequest) =>
+  request<PayrollSendResponse>("POST", `${runPath(runId)}/send`, { body, quiet: true });
+
+/** The active policy, for the payroll margin limit. Quiet: the screen falls back to 80%. */
+export const activePolicyQuiet = () => request<ActiveLeashPolicy>("GET", "/leash/policy", { quiet: true });

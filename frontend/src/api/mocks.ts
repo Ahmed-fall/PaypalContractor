@@ -744,13 +744,16 @@ function patchRunLine(req: TransportRequest, lineId: string): TransportResponse 
   return ok(payrollMock.run);
 }
 
-function sendRun(): TransportResponse {
+function sendRun(req: TransportRequest): TransportResponse {
   const run = currentRun();
+  // Like `lines_ready_to_send`: run flags the owner ticked (approve_run_flags) are no longer open.
+  const approved = (req.body as { approve_run_flags?: unknown } | null)?.approve_run_flags;
+  const ticked = Array.isArray(approved) ? approved.filter((f): f is string => typeof f === "string") : [];
   const sent = pick<PayrollSendResponse>(leashFixtures, "payroll_send_response.json");
   if (!run || !sent) return fail(404, "NOT_FOUND", "Fixture payroll_send_response.json is not available.");
   if (run.status === "SENT" || run.status === "PAID") return ok(sent, 202);
   const openLines = run.lines.filter((l) => l.decision === "ASK" && l.owner_action === null).map((l) => l.line_id);
-  const openFlags = run.run_decision === "ASK" ? run.run_flags : [];
+  const openFlags = run.run_decision === "ASK" ? run.run_flags.filter((f) => !ticked.includes(f)) : [];
   if (openLines.length > 0 || openFlags.length > 0) {
     return fail(409, "LEASH_ASK_UNRESOLVED", "Some checks still need your decision.", {
       open_asks: openLines,
@@ -881,7 +884,7 @@ const routes: Array<[string, RegExp, Handler]> = [
   ["POST", /^\/leash\/payroll\/runs$/, (r) => createRunMock(r)],
   ["GET", /^\/leash\/payroll\/runs\/([^/]+)$/, () => getRun()],
   ["PATCH", /^\/leash\/payroll\/runs\/([^/]+)\/lines\/([^/]+)$/, (r, [, lineId]) => patchRunLine(r, decodeURIComponent(lineId))],
-  ["POST", /^\/leash\/payroll\/runs\/([^/]+)\/send$/, () => sendRun()],
+  ["POST", /^\/leash\/payroll\/runs\/([^/]+)\/send$/, (r) => sendRun(r)],
   ["POST", /^\/demo\/reset$/, () => {
     resetMockState();
     return ok({ status: "reset" });
