@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { on } from "../lib/events";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
@@ -119,6 +120,52 @@ describe("Leash Team screen (WP-5.5)", () => {
     await user.type(screen.getByLabelText("Hourly rate"), "12.50");
     await user.click(screen.getByRole("button", { name: "Add member" }));
     expect(await screen.findByText("That payout email already belongs to Sara.")).toBeInTheDocument();
+  });
+
+  it("a 409 shows inline only, with no global toast", async () => {
+    setTransport(async (req) =>
+      req.method === "POST"
+        ? {
+            status: 409,
+            body: { error: { code: "MEMBER_NAME_IN_USE", message: "Someone called Nadia is already on the team.", details: null, request_id: "r" } },
+          }
+        : mockTransport(req),
+    );
+    const toast = vi.fn();
+    const off = on("api-error", toast);
+    const user = userEvent.setup();
+    renderTeam();
+    await screen.findByText("Omar");
+    await user.type(screen.getByLabelText("Name"), "Nadia");
+    await user.type(screen.getByLabelText("Payout email"), "nadia@personal.example.com");
+    await user.type(screen.getByLabelText("Hourly rate"), "12.50");
+    await user.click(screen.getByRole("button", { name: "Add member" }));
+    expect(await screen.findByText("Someone called Nadia is already on the team.")).toBeInTheDocument();
+    expect(toast).not.toHaveBeenCalled();
+    off();
+  });
+
+  it("an edit with no changes closes without a request", async () => {
+    const calls: TransportRequest[] = [];
+    setTransport(async (req) => {
+      calls.push(req);
+      return mockTransport(req);
+    });
+    const user = userEvent.setup();
+    renderTeam();
+    await user.click(await screen.findByRole("button", { name: "Edit Omar" }));
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(calls.some((c) => c.method === "PATCH")).toBe(false);
+  });
+
+  it("the roster mock remembers an email change and stamps email_changed_at", async () => {
+    const before = (await api.team())[0];
+    const updated = await api.updateTeamMember(before.member_id, { payout_email: "new@personal.example.com" });
+    expect(updated.email_changed_at).not.toBe(before.email_changed_at);
+    expect((await api.team())[0].payout_email).toBe("new@personal.example.com");
+    resetMockState();
+    expect((await api.team())[0].payout_email).toBe(before.payout_email);
   });
 });
 

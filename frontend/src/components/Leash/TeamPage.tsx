@@ -6,6 +6,7 @@ import { Button } from "../common/Button";
 import { Card, PageHeader } from "../common/Card";
 import { Modal } from "../common/Modal";
 import { Pill } from "../common/StatusBadge";
+import { addMember, patchMember } from "./api";
 import { formatDate } from "../../lib/dates";
 import { formatMoney, isMoney, normaliseMoney, toCents } from "../../lib/money";
 import type { TeamMemberOut } from "../../types/contracts";
@@ -21,7 +22,7 @@ interface GridContext {
 type CellProps = CustomCellRendererProps<TeamMemberOut, unknown, GridContext>;
 
 function validRate(value: string): boolean {
-  return isMoney(value) && /^\d+(\.\d{1,2})?$/.test(value.trim()) && toCents(value) > 0;
+  return isMoney(value) && toCents(value) > 0;
 }
 
 /** A server rejection that belongs to a field, shown in words. */
@@ -92,7 +93,7 @@ export default function TeamPage() {
     setRateError(null);
     setAdding(true);
     try {
-      const created = await api.addTeamMember({
+      const created = await addMember({
         name: name.trim(),
         payout_email: email.trim(),
         hourly_rate: normaliseMoney(rate),
@@ -118,7 +119,11 @@ export default function TeamPage() {
       const body: { payout_email?: string; hourly_rate?: string } = {};
       if (emailChanged) body.payout_email = editEmail.trim();
       if (toCents(editRate) !== toCents(editing.hourly_rate)) body.hourly_rate = normaliseMoney(editRate);
-      const updated = await api.updateTeamMember(editing.member_id, body);
+      if (Object.keys(body).length === 0) {
+        setEditing(null);
+        return;
+      }
+      const updated = await patchMember(editing.member_id, body);
       setMembers((rows) => rows.map((m) => (m.member_id === updated.member_id ? updated : m)));
       setEditing(null);
     } catch (err) {
@@ -305,24 +310,25 @@ export default function TeamPage() {
         ) : (
           editing && (
             <form id="edit-member-form" onSubmit={onSaveClick} className="space-y-4" noValidate>
-              <label className="block" htmlFor="edit-email">
+              <label className="block">
                 <span className="text-[13px] font-medium text-ink-soft">Payout email</span>
+                <input id="edit-email" className={`${input} mt-1`} type="email" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} required />
               </label>
-              <input id="edit-email" className={input} type="email" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} required />
-              <label className="block" htmlFor="edit-rate">
+              <label className="block">
                 <span className="text-[13px] font-medium text-ink-soft">Hourly rate</span>
+                <input
+                  id="edit-rate"
+                  className={`${input} num mt-1`}
+                  inputMode="decimal"
+                  value={editRate}
+                  onChange={(e) => setEditRate(e.target.value)}
+                  aria-invalid={editRateError ? true : undefined}
+                  aria-describedby={editRateError ? "edit-rate-error" : undefined}
+                  required
+                />
               </label>
-              <input
-                id="edit-rate"
-                className={`${input} num`}
-                inputMode="decimal"
-                value={editRate}
-                onChange={(e) => setEditRate(e.target.value)}
-                aria-invalid={editRateError ? true : undefined}
-                required
-              />
               {editRateError && (
-                <p role="alert" className="text-[13px] text-bad">
+                <p id="edit-rate-error" role="alert" className="text-[13px] text-bad">
                   {editRateError}
                 </p>
               )}
@@ -336,11 +342,6 @@ export default function TeamPage() {
               )}
             </form>
           )
-        )}
-        {editing && confirmEmail && editError && (
-          <p role="alert" className="mt-4 text-[14px] text-bad">
-            {editError}
-          </p>
         )}
       </Modal>
     </div>

@@ -25,6 +25,7 @@ import type {
   PayrollRunOut,
   PayrollSendResponse,
   PersistedContractExtraction,
+  TeamMemberOut,
   PolicyCompileResponse,
   LeashPolicy,
   RemediationInvoiceRecord,
@@ -132,6 +133,7 @@ export function setMockLatency(ms: number): void {
 export function resetMockState(): void {
   state = seed();
   payrollMock = { run: null, sentGets: 0 };
+  teamMock = null;
   try {
     sessionStorage.removeItem(PERSIST_KEY);
   } catch {
@@ -660,6 +662,28 @@ function leashFixture(name: string, status = 200): TransportResponse {
  * GET -> exclude Omar -> send (202) -> two GETs say SENT -> the next says PAID.
  * Kept out of the persisted state on purpose; resetMockState() clears it.
  */
+/** The roster is stateful for the session too; cleared by resetMockState(). */
+let teamMock: TeamMemberOut[] | null = null;
+
+function roster(): TeamMemberOut[] {
+  if (!teamMock) {
+    const omar = pick<TeamMemberOut>(leashFixtures, "team_member_omar.json");
+    teamMock = omar ? [omar] : [];
+  }
+  return teamMock;
+}
+
+function patchMember(req: TransportRequest, id: string): TransportResponse {
+  const member = roster().find((m) => m.member_id === id);
+  if (!member) return fail(404, "NOT_FOUND", `Team member ${id} was not found.`);
+  const body = (req.body ?? {}) as Partial<TeamMemberOut>;
+  if (body.payout_email && body.payout_email.toLowerCase() !== member.payout_email.toLowerCase()) {
+    member.email_changed_at = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  }
+  Object.assign(member, body);
+  return ok(member);
+}
+
 let payrollMock: { run: PayrollRunOut | null; sentGets: number } = { run: null, sentGets: 0 };
 
 function currentRun(): PayrollRunOut | null {
@@ -696,6 +720,7 @@ function patchRunLine(req: TransportRequest, lineId: string): TransportResponse 
   if (line.decision === "DENY" || line.flags.includes("DEFAULT")) {
     if (action === "APPROVED") return fail(409, "LINE_NOT_CHECKED", "Leash couldn't check this line yet.");
   }
+  // `prl_0001` is specific to the fixture pair: Omar's line in the awaiting and after_exclude runs.
   if (action === "EXCLUDED" && lineId === "prl_0001") {
     // The fixture pair: excluding Omar drops PR-06 and the total to $420.00.
     const after = pick<PayrollRunOut>(leashFixtures, "payroll_run_after_exclude.json");
@@ -762,16 +787,13 @@ const routes: Array<[string, RegExp, Handler]> = [
   ["POST", /^\/leash\/policy\/compile$/, () => leashFixture("policy_compile_response.json")],
   ["POST", /^\/leash\/policy\/activate$/, (r) =>
     ok({ version: (r.body as { version?: number })?.version ?? 1, active: true, activated_at: new Date().toISOString() })],
-  ["GET", /^\/leash\/team$/, () => {
-    const omar = pick<unknown>(leashFixtures, "team_member_omar.json");
-    return ok(omar ? [omar] : []);
+  ["GET", /^\/leash\/team$/, () => ok(roster())],
+  ["POST", /^\/leash\/team$/, (r) => {
+    const m = { member_id: nextId("tm_"), email_changed_at: null, first_paid_at: null, active: true, ...(r.body as object) } as TeamMemberOut;
+    roster().push(m);
+    return ok(m, 201);
   }],
-  ["POST", /^\/leash\/team$/, (r) =>
-    ok({ member_id: nextId("tm_"), email_changed_at: null, first_paid_at: null, active: true, ...(r.body as object) }, 201)],
-  ["PATCH", /^\/leash\/team\/([^/]+)$/, (r, [id]) => {
-    const omar = pick<Record<string, unknown>>(leashFixtures, "team_member_omar.json") ?? {};
-    return ok({ ...omar, member_id: decodeURIComponent(id), ...(r.body as object) });
-  }],
+  ["PATCH", /^\/leash\/team\/([^/]+)$/, (r, [id]) => patchMember(r, decodeURIComponent(id))],
   ["POST", /^\/leash\/timesheets$/, () => leashFixture("timesheet_mapping_required.json", 201)],
   ["POST", /^\/leash\/timesheets\/([^/]+)\/mapping$/, () => leashFixture("timesheet_parsed.json")],
   ["POST", /^\/leash\/timesheets\/([^/]+)\/discard$/, (_r, [id]) =>

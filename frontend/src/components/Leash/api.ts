@@ -4,7 +4,21 @@
  * mock mode work exactly as for every other call.
  */
 import { request } from "../../api/client";
-import type { LeashPolicy, PayrollRunOut, PolicyCompileResponse } from "../../types/contracts";
+import type {
+  LeashPolicy,
+  PayrollRunOut,
+  PolicyCompileResponse,
+  TeamMemberCreate,
+  TeamMemberOut,
+  TeamMemberUpdate,
+} from "../../types/contracts";
+
+/** Add a team member. Quiet: the screen shows 409/422 errors beside the form. */
+export const addMember = (body: TeamMemberCreate) => request<TeamMemberOut>("POST", "/leash/team", { body, quiet: true });
+
+/** Edit a team member. Quiet for the same reason as `addMember`. */
+export const patchMember = (memberId: string, body: TeamMemberUpdate) =>
+  request<TeamMemberOut>("PATCH", `/leash/team/${encodeURIComponent(memberId)}`, { body, quiet: true });
 
 /** The latest 20 payroll runs, newest first. */
 export const listPayrollRuns = () => request<PayrollRunOut[]>("GET", "/leash/payroll/runs", { quiet: true });
