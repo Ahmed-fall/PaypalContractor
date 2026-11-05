@@ -662,6 +662,21 @@ def test_unmappable_upload_blocks_until_discarded(ctx: Ctx) -> None:
     assert ctx.post("/payroll/runs", json=body).status_code == 200
 
 
+def test_discarded_file_can_be_uploaded_again(ctx: Ctx) -> None:
+    first = _upload_unmappable(ctx)
+    pending = ctx.post(
+        "/timesheets", files={"file": ("j.csv", b"just one header\nx\ny\n", "text/csv")}
+    )
+    assert pending.status_code == 409
+    assert pending.json()["error"]["code"] == "DUPLICATE_UPLOAD"
+    assert pending.json()["error"]["details"] == {"upload_id": first}
+    assert ctx.post(f"/timesheets/{first}/discard").status_code == 200
+    second = _upload_unmappable(ctx)
+    assert second != first
+    with ctx.sf() as db:
+        assert db.get(lm.TimesheetUploadRow, first) is None
+
+
 def test_discard_parsed_or_unknown_upload(ctx: Ctx) -> None:
     with ctx.sf() as db:
         parsed = db.scalars(select(lm.TimesheetUploadRow)).first()

@@ -1009,6 +1009,11 @@ async def upload_timesheet(
     existing = db.scalars(
         select(TimesheetUploadRow).where(TimesheetUploadRow.file_hash == digest)
     ).first()
+    if existing is not None and existing.status == "REJECTED":
+        # A discarded upload never stored entries; free its hash so the owner can retry.
+        db.delete(existing)
+        db.flush()
+        existing = None
     if existing is not None:
         raise ApiError(
             409,
