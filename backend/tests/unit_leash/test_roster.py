@@ -25,11 +25,7 @@ from backend.app.schemas.contracts import (
 )
 
 FIXTURE = (
-    Path(__file__).resolve().parents[3]
-    / "shared"
-    / "fixtures"
-    / "leash"
-    / "team_member_omar.json"
+    Path(__file__).resolve().parents[3] / "shared" / "fixtures" / "leash" / "team_member_omar.json"
 )
 T0 = datetime(2026, 9, 1, 9, 0, tzinfo=UTC)
 T1 = datetime(2026, 11, 4, 18, 40, tzinfo=UTC)
@@ -47,9 +43,7 @@ def _omar(
 
 def test_create_normalises_and_has_no_change_timestamp() -> None:
     m = create_member(
-        TeamMemberCreate(
-            name="Omar", payout_email="  Omar@Example.COM ", hourly_rate=Decimal(25)
-        ),
+        TeamMemberCreate(name="Omar", payout_email="  Omar@Example.COM ", hourly_rate=Decimal(25)),
         T0,
     )
     assert m.payout_email == "omar@example.com"
@@ -102,9 +96,7 @@ def test_conflicting_active_email_rejected() -> None:
     b = _omar("tm_b", "other@example.com", "Sara")
     roster.add(b)
     with pytest.raises(RosterConflict):
-        roster.replace(
-            update_member(b, TeamMemberUpdate(payout_email="dup@example.com"), T1)
-        )
+        roster.replace(update_member(b, TeamMemberUpdate(payout_email="dup@example.com"), T1))
     # replacing a member with itself is fine
     roster.replace(a)
 
@@ -131,9 +123,7 @@ def test_normalise_name() -> None:
 def test_find_by_key() -> None:
     roster = InMemoryRoster()
     omar = create_member(
-        TeamMemberCreate(
-            name="Omar Khaled", payout_email="o@example.com", hourly_rate=Decimal(20)
-        ),
+        TeamMemberCreate(name="Omar Khaled", payout_email="o@example.com", hourly_rate=Decimal(20)),
         T0,
         member_id="tm_1",
     )
@@ -145,16 +135,12 @@ def test_find_by_key() -> None:
 def test_find_by_name() -> None:
     roster = InMemoryRoster()
     omar = create_member(
-        TeamMemberCreate(
-            name="Omar Khaled", payout_email="o@example.com", hourly_rate=Decimal(20)
-        ),
+        TeamMemberCreate(name="Omar Khaled", payout_email="o@example.com", hourly_rate=Decimal(20)),
         T0,
         member_id="tm_1",
     )
     sara = create_member(
-        TeamMemberCreate(
-            name="Sara", payout_email="s@example.com", hourly_rate=Decimal(20)
-        ),
+        TeamMemberCreate(name="Sara", payout_email="s@example.com", hourly_rate=Decimal(20)),
         T0,
         member_id="tm_2",
     )
@@ -166,9 +152,7 @@ def test_find_by_name() -> None:
     # ambiguous: two active members share a name (the roster refuses to build this,
     # but rows loaded from storage could); the name must then count as unknown
     twin = create_member(
-        TeamMemberCreate(
-            name="sara", payout_email="s2@example.com", hourly_rate=Decimal(20)
-        ),
+        TeamMemberCreate(name="sara", payout_email="s2@example.com", hourly_rate=Decimal(20)),
         T0,
         member_id="tm_3",
     )
@@ -224,9 +208,7 @@ def test_inactive_member_does_not_block_its_name() -> None:
     roster.replace(update_member(a, TeamMemberUpdate(active=False), T1))
     roster.add(_named("tm_b", "sara", "b@example.com"))
     roster.add(
-        update_member(
-            _named("tm_c", "SARA", "c@example.com"), TeamMemberUpdate(active=False), T1
-        )
+        update_member(_named("tm_c", "SARA", "c@example.com"), TeamMemberUpdate(active=False), T1)
     )
 
 

@@ -909,3 +909,13 @@ def test_email_changed_during_the_gate_is_never_paid(
     with ctx.sf() as db:
         row = db.get(lm.PayrollRunRow, run_id)
         assert row is not None and row.sender_batch_id is None
+
+
+def test_new_run_is_checked_once(ctx: Ctx) -> None:
+    with ctx.sf() as db:
+        before = db.query(lm.LeashDecisionRow).count()
+    _create_run(ctx)
+    ctx.client.portal.call(runs.wait_for_background)  # let any background check finish
+    with ctx.sf() as db:
+        rows = db.query(lm.LeashDecisionRow).count() - before
+    assert rows == 4  # three lines and the run, not eight

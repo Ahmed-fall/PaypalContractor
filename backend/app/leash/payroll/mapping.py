@@ -129,9 +129,7 @@ def _cell_text(value: object) -> str:
     return str(value)
 
 
-def _valid_proposal(
-    proposal: object, headers: Sequence[str]
-) -> ColumnMappingProposal | None:
+def _valid_proposal(proposal: object, headers: Sequence[str]) -> ColumnMappingProposal | None:
     if not isinstance(proposal, ColumnMappingProposal):
         return None
     if not set(proposal.mapping) <= set(headers):

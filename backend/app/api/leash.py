@@ -29,7 +29,7 @@ from fastapi import APIRouter, Depends, File, Query, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..db.database import Base, get_db, new_id, utcnow
@@ -45,6 +45,7 @@ from ..leash.models import (
 )
 from ..leash.guard import DEFAULT_RULE_ID, PAYROLL_CHECKS_RULE_ID
 from ..leash.payroll import runs
+from ..leash.payroll.calculate import CENT
 from ..leash.policy import BUILTIN_RULES
 from ..leash.seed import seed_leash_demo
 from ..leash.store import SqlPolicyProvider, aware
@@ -89,7 +90,6 @@ MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 RECENT_RUNS = 20
 DRAFT_SOURCE_TEXT = "(plain form)"
 _ZERO = Decimal("0.00")
-_CENT = Decimal("0.01")
 
 # --- once-per-process startup hooks ----------------------------------------------------
 
@@ -97,10 +97,6 @@ _startup_lock = asyncio.Lock()
 _tables_ready = False
 _seeded = False
 _resumed = False
-
-
-def _factory(db: Session) -> Callable[[], Session]:
-    return sessionmaker(bind=db.get_bind(), expire_on_commit=False, future=True)
 
 
 def _create_tables(db: Session) -> None:
@@ -184,7 +180,7 @@ _OUTCOME = {
 
 def _money_text(value: object) -> str:
     try:
-        return f"${Decimal(str(value)).quantize(_CENT)}"
+        return f"${Decimal(str(value)).quantize(CENT)}"
     except ArithmeticError:
         return str(value)
 
@@ -298,7 +294,7 @@ def _load_compiler() -> Callable[[str], Any] | None:
 
 @router.get("/policy", response_model=ActiveLeashPolicy)
 async def get_policy(db: Session = Depends(get_db)) -> ActiveLeashPolicy:
-    policy = await SqlPolicyProvider(_factory(db)).active_policy()
+    policy = await SqlPolicyProvider(runs.factory_for(db)).active_policy()
     row = db.scalars(select(LeashPolicyRow).where(LeashPolicyRow.active.is_(True))).first()
     activated = aware(row.activated_at or row.created_at) if row is not None else utcnow()
     return ActiveLeashPolicy.model_validate(
@@ -533,7 +529,8 @@ async def create_payroll_run(
     run_id = await runs.on_milestone_payment(body.milestone_id)
     if run_id is None:
         raise ApiError(404, "NOT_FOUND", "No timesheet hours for this milestone.")
-    await runs.check_run(run_id)
+    if not await runs.wait_for_run(run_id):  # H2 started no check (or it already finished)
+        await runs.check_run(run_id)
     return runs.get_run_out(run_id)
 
 

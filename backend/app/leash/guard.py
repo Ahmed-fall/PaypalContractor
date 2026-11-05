@@ -37,9 +37,7 @@ KNOWN_CONDITIONS: frozenset[str] = frozenset(
 
 # Policy ALLOW rules never match payroll: only the deterministic payroll checks
 # (facts["payroll_check"]) can supply a payroll ALLOW; policy rules can only tighten it.
-ALLOW_ENABLED_ACTIONS: frozenset[GuardAction] = frozenset(
-    {GuardAction.SEND_REMEDIATION_INVOICE}
-)
+ALLOW_ENABLED_ACTIONS: frozenset[GuardAction] = frozenset({GuardAction.SEND_REMEDIATION_INVOICE})
 
 _MONEY_2DP = re.compile(r"[0-9]+\.[0-9]{2}")
 _FLAG = re.compile(r"PR-0[1-7]")

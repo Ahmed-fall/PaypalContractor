@@ -82,7 +82,7 @@ from ..store import (
     aware,
     to_team_member,
 )
-from .calculate import DraftLine, build_lines, cash_used_pct, run_total
+from .calculate import CENT, DraftLine, build_lines, cash_used_pct, money, run_total
 from .checks import LineCheck, MemberHistory, check_line, check_run as run_checks
 from .mapping import _load_mapper, confirm_mapping, resolve_mapping
 from .parse import RawTable, TimesheetError, file_hash, header_signature, read_table
@@ -93,13 +93,13 @@ logger = logging.getLogger(__name__)
 session_factory: SessionFactory = SessionLocal
 
 FINISHED = frozenset({"SENT", "PAID", "PARTIAL", "FAILED"})
-_CENT = Decimal("0.01")
 _ZERO = Decimal("0.00")
 _ERROR_STATUS = {"FILE_TOO_LARGE": 413, "UNSUPPORTED_FILE_TYPE": 415, "TIMESHEET_INVALID": 422}
 
 _PLACEHOLDER_IDS = frozenset({DEFAULT_RULE_ID, PAYROLL_CHECKS_RULE_ID})
 
 _tasks: set[asyncio.Task[Any]] = set()
+_run_tasks: dict[str, asyncio.Task[Any]] = {}
 
 
 def _visible_ids(*groups: Any) -> list[str]:
@@ -110,10 +110,6 @@ def _visible_ids(*groups: Any) -> list[str]:
             if str(item) not in _PLACEHOLDER_IDS:
                 seen[str(item)] = None
     return list(seen)
-
-
-def _money(value: Decimal) -> str:
-    return format(value.quantize(_CENT, rounding=ROUND_HALF_UP), "f")
 
 
 def _not_found(code: str, message: str) -> ApiError:
@@ -151,7 +147,7 @@ def cash_in_for_milestone(db: Session, milestone_id: str) -> Decimal:
         )
     ):
         total += amount
-    return total.quantize(_CENT, rounding=ROUND_HALF_UP)
+    return total.quantize(CENT, rounding=ROUND_HALF_UP)
 
 
 def _invoiced_open(db: Session, milestone_id: str, currency: str) -> Decimal:
@@ -281,6 +277,9 @@ def _open_run(db: Session, milestone_id: str) -> PayrollRunRow | None:
 
 def _task_done(task: asyncio.Task[Any]) -> None:
     _tasks.discard(task)
+    for run_id, pending in list(_run_tasks.items()):
+        if pending is task:
+            del _run_tasks[run_id]
     if task.cancelled():
         return
     exc = task.exception()
@@ -299,8 +298,18 @@ async def on_milestone_payment(milestone_id: str) -> str | None:
         return run_id
     task = asyncio.get_running_loop().create_task(check_run(run_id))
     _tasks.add(task)
+    _run_tasks[run_id] = task
     task.add_done_callback(_task_done)
     return run_id
+
+
+async def wait_for_run(run_id: str) -> bool:
+    """Await the run's background check from H2; False when none is pending (already done)."""
+    task = _run_tasks.get(run_id)
+    if task is None or task.done():
+        return False
+    await asyncio.gather(task, return_exceptions=True)
+    return True
 
 
 async def wait_for_background() -> None:
@@ -550,8 +559,8 @@ async def _check_and_snapshot(run_id: str) -> tuple[PayrollRunOut, dict[str, Che
                         "decision": checks[ln.line_id].decision.value,
                         "flags": list(checks[ln.line_id].flags),
                     },
-                    "amount": _money(ln.gross),
-                    "hours": _money(ln.hours),
+                    "amount": money(ln.gross),
+                    "hours": money(ln.hours),
                     "member_key": ln.member_key,
                 },
                 ln.line_id,
@@ -592,9 +601,9 @@ async def _check_and_snapshot(run_id: str) -> tuple[PayrollRunOut, dict[str, Che
         GuardAction.SEND_PAYROLL_BATCH,
         {
             "payroll_check": {"decision": run_decision.value, "flags": ordered_flags},
-            "amount": _money(total),
-            "cash_in": _money(inputs.cash_in),
-            "cash_used_pct": _money(pct),
+            "amount": money(total),
+            "cash_in": money(inputs.cash_in),
+            "cash_used_pct": money(pct),
         },
         run_id,
     )
@@ -722,7 +731,7 @@ def _stamp_owner_action(
         line.owner_action_at = now
         # The approval covers this amount, these flags and these rules, nothing more.
         line.owner_flags_json = {
-            "gross": _money(line.gross),
+            "gross": money(line.gross),
             "flags": list(line.flags_json or []),
             "rule_ids": rule_ids,
         }
@@ -882,7 +891,7 @@ def margin_rows(db: Session) -> MarginResponse:
                     pending += ln.gross
         margin = cash_in - paid
         pct = (
-            (margin / cash_in * 100).quantize(_CENT, rounding=ROUND_HALF_UP)
+            (margin / cash_in * 100).quantize(CENT, rounding=ROUND_HALF_UP)
             if cash_in > 0
             else _ZERO
         )
@@ -910,7 +919,7 @@ def margin_rows(db: Session) -> MarginResponse:
 # --- timesheet and roster services ------------------------------------------------------
 
 
-def _factory_for(db: Session) -> Callable[[], Session]:
+def factory_for(db: Session) -> Callable[[], Session]:
     return sessionmaker(bind=db.get_bind(), expire_on_commit=False, future=True)
 
 
@@ -983,7 +992,7 @@ async def upload_timesheet(
         )
     try:
         table = read_table(data, filename)
-        store = SqlMappingStore(_factory_for(db))
+        store = SqlMappingStore(factory_for(db))
         resolution = await resolve_mapping(table, store, _load_mapper())
         entries = (
             parse_entries(table, resolution.mapping) if resolution.mapping is not None else None
@@ -1036,7 +1045,7 @@ async def confirm_timesheet_mapping(
     )
     try:
         confirmed = await confirm_mapping(
-            SqlMappingStore(_factory_for(db)),
+            SqlMappingStore(factory_for(db)),
             header_signature(table.headers),
             dict(mapping),
             table.headers,
@@ -1056,14 +1065,14 @@ def _conflict(exc: RosterConflict) -> ApiError:
 def create_member(db: Session, data: TeamMemberCreate) -> TeamMemberOut:
     member = _new_member(data, utcnow())
     try:
-        SqlRoster(_factory_for(db)).add(member)
+        SqlRoster(factory_for(db)).add(member)
     except RosterConflict as exc:
         raise _conflict(exc) from exc
     return to_out(member)
 
 
 def update_member(db: Session, member_id: str, patch: TeamMemberUpdate) -> TeamMemberOut:
-    roster = SqlRoster(_factory_for(db))
+    roster = SqlRoster(factory_for(db))
     current = roster.get(member_id)
     if current is None:
         raise _not_found("TEAM_MEMBER_NOT_FOUND", "Team member not found.")
@@ -1099,5 +1108,7 @@ __all__ = [
     "set_line_action",
     "update_member",
     "upload_timesheet",
+    "factory_for",
     "wait_for_background",
+    "wait_for_run",
 ]

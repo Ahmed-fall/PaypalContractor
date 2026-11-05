@@ -60,9 +60,7 @@ def create_member(
     )
 
 
-def update_member(
-    member: TeamMember, patch: TeamMemberUpdate, now: datetime
-) -> TeamMember:
+def update_member(member: TeamMember, patch: TeamMemberUpdate, now: datetime) -> TeamMember:
     changes: dict[str, object] = {}
     fields = patch.model_fields_set
     if "name" in fields and patch.name is not None:

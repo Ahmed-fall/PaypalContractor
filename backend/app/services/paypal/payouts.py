@@ -16,7 +16,7 @@ import logging
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select, update
@@ -27,6 +27,7 @@ from ...db.database import utcnow
 from ...db.models import Contract, Milestone
 from ...leash.models import PayrollLineRow, PayrollRunRow, TeamMemberRow
 from ...leash.payroll import runs
+from ...leash.payroll.calculate import money
 from ...leash.store import aware
 from ...schemas.contracts import PayrollLineOut
 from ._client import PayPalAPIError, PayPalUnavailable, paypal_request
@@ -34,14 +35,9 @@ from .auth import PayPalAuthError
 
 logger = logging.getLogger(__name__)
 
-_CENT = Decimal("0.01")
 _PAYOUTS_PATH = "/v1/payments/payouts"
 _DEFINITE_REJECTIONS = (400, 422)
 TERMINAL_BATCH_STATUSES = frozenset({"SUCCESS", "DENIED", "CANCELED"})
-
-
-def _money(value: Decimal) -> str:
-    return format(value.quantize(_CENT, rounding=ROUND_HALF_UP), "f")
 
 
 def sender_batch_id_for(milestone_code: str, run_id: str) -> str:
@@ -70,8 +66,8 @@ def build_batch(
             {
                 "recipient_type": "EMAIL",
                 "receiver": ln.payout_email,
-                "amount": {"value": _money(ln.gross), "currency": currency},
-                "note": f"{milestone.code} · {_money(ln.hours)} h x ${_money(ln.rate)}",
+                "amount": {"value": money(ln.gross), "currency": currency},
+                "note": f"{milestone.code} · {money(ln.hours)} h x ${money(ln.rate)}",
                 "sender_item_id": ln.line_id,
             }
             for ln in lines

@@ -27,12 +27,8 @@ def pol(*rules: LeashRule) -> LeashPolicy:
     return LeashPolicy(version=1, rules=list(rules))
 
 
-def rule(
-    rid: str, when: dict[str, Any], outcome: LeashDecision, action: GuardAction
-) -> LeashRule:
-    return LeashRule(
-        id=rid, applies_to=action, when=when, outcome=outcome, source_text="t"
-    )
+def rule(rid: str, when: dict[str, Any], outcome: LeashDecision, action: GuardAction) -> LeashRule:
+    return LeashRule(id=rid, applies_to=action, when=when, outcome=outcome, source_text="t")
 
 
 class LyingStr(str):

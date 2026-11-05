@@ -12,9 +12,7 @@ from backend.app.leash.explain import MORE_CHECKS, template_reason
 from backend.app.schemas.contracts import GuardAction, LeashDecision
 
 ACTION = GuardAction.SEND_REMEDIATION_INVOICE
-DEFAULT = (
-    "Leash couldn't confirm this action is safe to run on its own. Review it first."
-)
+DEFAULT = "Leash couldn't confirm this action is safe to run on its own. Review it first."
 
 
 def reason(decision: LeashDecision, ids: list[str], facts: dict[str, Any]) -> str:
@@ -74,17 +72,13 @@ def test_truncation_without_spaces() -> None:
 
 
 def test_template_never_raises_on_garbage() -> None:
-    assert reason(LeashDecision.ASK, ["G-02"], {"amount": object()}).startswith(
-        "This amount"
-    )
+    assert reason(LeashDecision.ASK, ["G-02"], {"amount": object()}).startswith("This amount")
     assert reason(LeashDecision.ASK, ["G-02"], {}).startswith("This amount")
     assert reason(LeashDecision.ASK, [object()], {}) == DEFAULT  # type: ignore[list-item]
     assert reason(LeashDecision.ASK, ["G-02"], None) == DEFAULT  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize(
-    "ids", [["G-01"], ["G-02"], ["G-03"], ["G-04"], ["G-05"], ["DEFAULT"]]
-)
+@pytest.mark.parametrize("ids", [["G-01"], ["G-02"], ["G-03"], ["G-04"], ["G-05"], ["DEFAULT"]])
 def test_template_has_no_numbers_not_in_facts(ids: list[str]) -> None:
     facts = {"amount": "200.00", "client": "Acme 42"}
     for digits in re.findall(r"\d+", reason(LeashDecision.ASK, ids, facts)):
@@ -125,10 +119,7 @@ PAYROLL_SENTENCES: list[tuple[GuardAction, LeashDecision, str, str]] = [
         PAY,
         LeashDecision.ASK,
         "PR-01",
-        (
-            "This team member's payout email changed recently. "
-            "Confirm it with them before paying."
-        ),
+        ("This team member's payout email changed recently. Confirm it with them before paying."),
     ),
     (
         PAY,
@@ -149,10 +140,7 @@ PAYROLL_SENTENCES: list[tuple[GuardAction, LeashDecision, str, str]] = [
         PAY,
         LeashDecision.ASK,
         "PR-03",
-        (
-            "This is the first payment to this team member. "
-            "Check their details before paying."
-        ),
+        ("This is the first payment to this team member. Check their details before paying."),
     ),
     (
         PAY,
@@ -167,10 +155,7 @@ PAYROLL_SENTENCES: list[tuple[GuardAction, LeashDecision, str, str]] = [
         PAY,
         LeashDecision.DENY,
         "PR-05",
-        (
-            "This person isn't in the roster or appears more than once, "
-            "so they can't be paid."
-        ),
+        ("This person isn't in the roster or appears more than once, so they can't be paid."),
     ),
     (
         BATCH,
@@ -185,17 +170,12 @@ PAYROLL_SENTENCES: list[tuple[GuardAction, LeashDecision, str, str]] = [
         PAY,
         LeashDecision.DENY,
         "PR-07",
-        (
-            "This team member was already paid for this milestone, "
-            "so they can't be paid again."
-        ),
+        ("This team member was already paid for this milestone, so they can't be paid again."),
     ),
 ]
 
 
-@pytest.mark.parametrize(
-    ("action", "decision", "rule_id", "expected"), PAYROLL_SENTENCES
-)
+@pytest.mark.parametrize(("action", "decision", "rule_id", "expected"), PAYROLL_SENTENCES)
 def test_template_payroll_rules(
     action: GuardAction, decision: LeashDecision, rule_id: str, expected: str
 ) -> None:
@@ -223,9 +203,7 @@ def test_template_pr02_follows_the_decision() -> None:
         (LeashDecision.ASK, "PR-07"),
     ],
 )
-def test_template_payroll_never_contradicts_decision(
-    decision: LeashDecision, rule_id: str
-) -> None:
+def test_template_payroll_never_contradicts_decision(decision: LeashDecision, rule_id: str) -> None:
     defaults = {
         LeashDecision.ALLOW: ALLOW_DEFAULT,
         LeashDecision.ASK: DEFAULT,
@@ -279,9 +257,7 @@ def test_rule_sentences_only_apply_to_their_own_action(
     action: GuardAction, decision: LeashDecision, rule_id: str, expected: str
 ) -> None:
     """A user rule reusing a G-/PR- id on another action must not borrow its sentence."""
-    assert (
-        template_reason(action, decision, [rule_id], {"amount": "100.00"}) == expected
-    )
+    assert template_reason(action, decision, [rule_id], {"amount": "100.00"}) == expected
 
 
 def test_combined_payroll_ask_keeps_every_kept_sentence_whole() -> None:
@@ -289,8 +265,7 @@ def test_combined_payroll_ask_keeps_every_kept_sentence_whole() -> None:
     assert len(text) <= 200
     assert "…" not in text
     singles = [
-        template_reason(PAY, LeashDecision.ASK, [i], {})
-        for i in ("PR-01", "PR-03", "PR-04")
+        template_reason(PAY, LeashDecision.ASK, [i], {}) for i in ("PR-01", "PR-03", "PR-04")
     ]
     kept = text.removesuffix(MORE_CHECKS).strip()
     assert kept, text

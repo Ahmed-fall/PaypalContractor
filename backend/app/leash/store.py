@@ -123,7 +123,9 @@ class SqlPolicyProvider:
         return self._seed_default(db)
 
     def _seed_default(self, db: Session) -> LeashPolicyRow:
-        latest = db.scalars(select(LeashPolicyRow.version).order_by(LeashPolicyRow.version.desc())).first()
+        latest = db.scalars(
+            select(LeashPolicyRow.version).order_by(LeashPolicyRow.version.desc())
+        ).first()
         policy = default_policy().model_copy(update={"version": (latest or 0) + 1})
         row = LeashPolicyRow(
             id=new_id("lpol"),

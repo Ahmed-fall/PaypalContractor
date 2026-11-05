@@ -74,9 +74,7 @@ def test_reads_xlsx_with_dates_and_numbers() -> None:
 
 
 def test_csv_dialects() -> None:
-    text = (
-        "\ufeffEmployee;Day;Hrs\r\nOmar;2026-10-01;8\r\nSara;2026-10-02;6\r\n\r\n\r\n"
-    )
+    text = "\ufeffEmployee;Day;Hrs\r\nOmar;2026-10-01;8\r\nSara;2026-10-02;6\r\n\r\n\r\n"
     table = read_table(text.encode("utf-8"), "a.csv")
     assert table.headers == ("Employee", "Day", "Hrs")
     assert table.rows == (("Omar", "2026-10-01", "8"), ("Sara", "2026-10-02", "6"))
@@ -181,9 +179,7 @@ def test_xlsx_headers_are_stripped_and_blank_rows_dropped() -> None:
 def test_header_signature() -> None:
     sig = header_signature(["Employee", "Day"])
     assert sig != header_signature(["Day", "Employee"])
-    assert header_signature([" Employee ", "DAY"]) == header_signature(
-        ["employee", "day"]
-    )
+    assert header_signature([" Employee ", "DAY"]) == header_signature(["employee", "day"])
     assert header_signature(["Hours  Worked"]) == header_signature(["hours worked"])
     assert len(sig) == 64
     assert sig == sig.lower()

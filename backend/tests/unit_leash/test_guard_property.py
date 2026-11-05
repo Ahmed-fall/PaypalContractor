@@ -61,19 +61,9 @@ def _facts(rng: random.Random) -> dict[str, Any]:
 
 
 def _money_ok(v: Any) -> Decimal | None:
-    if (
-        isinstance(v, Decimal)
-        and v.is_finite()
-        and v >= 0
-        and v.as_tuple().exponent == -2
-    ):
+    if isinstance(v, Decimal) and v.is_finite() and v >= 0 and v.as_tuple().exponent == -2:
         return v
-    if (
-        isinstance(v, str)
-        and len(v) >= 4
-        and v[-3] == "."
-        and v.replace(".", "", 1).isdigit()
-    ):
+    if isinstance(v, str) and len(v) >= 4 and v[-3] == "." and v.replace(".", "", 1).isdigit():
         return Decimal(v)
     return None
 
@@ -89,9 +79,7 @@ def _days_ok(facts: dict[str, Any]) -> bool:
     if "days_since_last_client_invoice" not in facts:
         return False
     days = facts["days_since_last_client_invoice"]
-    return days is None or (
-        isinstance(days, int) and not isinstance(days, bool) and days >= 0
-    )
+    return days is None or (isinstance(days, int) and not isinstance(days, bool) and days >= 0)
 
 
 def _all_valid(f: dict[str, Any]) -> bool:
@@ -115,10 +103,7 @@ def _oracle_allows(f: dict[str, Any]) -> bool:
     assert amount is not None and conf is not None
     if amount > Decimal("250.00") or conf < Decimal("0.9"):
         return False
-    if (
-        f["has_clause_quote"] is not True
-        or f["line_items_match_decimal_total"] is not True
-    ):
+    if f["has_clause_quote"] is not True or f["line_items_match_decimal_total"] is not True:
         return False
     if "never_auto_contact" in f["client_tags"]:
         return False

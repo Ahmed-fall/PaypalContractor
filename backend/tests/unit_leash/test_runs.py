@@ -67,9 +67,7 @@ def sf(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SessionMaker
     monkeypatch.setattr(runs, "session_factory", factory)
     monkeypatch.setattr(runs, "_load_mapper", lambda: None)
     runs._locks.clear()
-    configure(
-        LeashService(SqlPolicyProvider(factory), SqlDecisionLog(factory), explainer=None)
-    )
+    configure(LeashService(SqlPolicyProvider(factory), SqlDecisionLog(factory), explainer=None))
     yield factory
     service_module._service = None
     eng.dispose()
