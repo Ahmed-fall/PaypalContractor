@@ -376,26 +376,12 @@ def _policy_row(version: int, active: bool) -> lm.LeashPolicyRow:
 
 
 @pytest.mark.asyncio
-async def test_policy_provider_activates_inactive_v1(sf: Callable[[], Session]) -> None:
-    with sf() as db:
-        db.add(_policy_row(1, False))
-        db.commit()
-    policy = await SqlPolicyProvider(sf).active_policy()
-    assert policy.version == 1
-    with sf() as db:
-        rows = db.scalars(select(lm.LeashPolicyRow)).all()
-    assert len(rows) == 1 and rows[0].active is True and rows[0].activated_at is not None
-
-
-@pytest.mark.asyncio
-async def test_policy_provider_activates_highest_inactive_version(
-    sf: Callable[[], Session],
-) -> None:
+async def test_policy_provider_never_activates_a_draft(sf: Callable[[], Session]) -> None:
     with sf() as db:
         db.add_all([_policy_row(1, False), _policy_row(2, False)])
         db.commit()
     policy = await SqlPolicyProvider(sf).active_policy()
-    assert policy.version == 2
+    assert policy == default_policy().model_copy(update={"version": 3})
     with sf() as db:
-        active = {r.version for r in db.scalars(select(lm.LeashPolicyRow)) if r.active}
-    assert active == {2}
+        rows = {r.version: r.active for r in db.scalars(select(lm.LeashPolicyRow))}
+    assert rows == {1: False, 2: False, 3: True}
