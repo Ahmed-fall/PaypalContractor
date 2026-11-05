@@ -2,6 +2,7 @@
 
 Rulings that deviate from A.3 (all deliberate):
 - ``payroll_lines.hours`` is ``Numeric(7,2)``: ``(5,2)`` overflows above 999.99.
+  ``timesheet_entries.hours`` is also ``Numeric(7,2)``, consistent with it.
 - ``timesheet_uploads.table_json`` keeps the parsed raw table until its mapping is
   confirmed.
 - ``payroll_runs.idempotency_key`` (UNIQUE) makes run creation replay-safe.

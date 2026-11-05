@@ -286,3 +286,116 @@ def test_default_service_is_sql_backed() -> None:
     built = svc._default_service()
     assert isinstance(built._policies, SqlPolicyProvider)
     assert isinstance(built._log, SqlDecisionLog)
+
+
+# ---- Fix round 1 -------------------------------------------------------------
+
+
+def _fake_db_module(exc: Exception) -> Any:
+    import types
+
+    class _Boom(types.ModuleType):
+        def __getattr__(self, name: str) -> Any:
+            raise exc
+
+    return _Boom("backend.app.db.database")
+
+
+def test_default_service_propagates_non_import_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+
+    from backend.app.leash import service as svc
+
+    monkeypatch.setattr(svc, "_default", None)
+    monkeypatch.setitem(sys.modules, "backend.app.db.database", _fake_db_module(ValueError("x")))
+    with pytest.raises(ValueError):
+        svc._default_service()
+    assert svc._default is None
+
+
+def test_default_service_falls_back_only_on_import_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+
+    from backend.app.leash import service as svc
+
+    monkeypatch.setattr(svc, "_default", None)
+    monkeypatch.setitem(sys.modules, "backend.app.db.database", None)
+    built = svc._default_service()
+    assert isinstance(built._policies, svc.StaticPolicyProvider)
+    assert isinstance(built._log, svc.InMemoryDecisionLog)
+
+
+def test_default_service_is_one_object_across_threads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+    import time
+
+    from backend.app.leash import service as svc
+
+    monkeypatch.setattr(svc, "_default", None)
+    real = svc._build_default_service
+    calls: list[int] = []
+
+    def slow() -> LeashService:
+        calls.append(1)
+        time.sleep(0.2)
+        return real()
+
+    monkeypatch.setattr(svc, "_build_default_service", slow)
+    out: list[LeashService] = []
+    barrier = threading.Barrier(2)
+
+    def run() -> None:
+        barrier.wait()
+        out.append(svc._default_service())
+
+    threads = [threading.Thread(target=run) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(out) == 2 and out[0] is out[1]
+    assert len(calls) == 1
+
+
+def _policy_row(version: int, active: bool) -> lm.LeashPolicyRow:
+    return lm.LeashPolicyRow(
+        id=f"lpol_{version}",
+        version=version,
+        source_text="t",
+        compiled_json=default_policy()
+        .model_copy(update={"version": version})
+        .model_dump(mode="json"),
+        active=active,
+    )
+
+
+@pytest.mark.asyncio
+async def test_policy_provider_activates_inactive_v1(sf: Callable[[], Session]) -> None:
+    with sf() as db:
+        db.add(_policy_row(1, False))
+        db.commit()
+    policy = await SqlPolicyProvider(sf).active_policy()
+    assert policy.version == 1
+    with sf() as db:
+        rows = db.scalars(select(lm.LeashPolicyRow)).all()
+    assert len(rows) == 1 and rows[0].active is True and rows[0].activated_at is not None
+
+
+@pytest.mark.asyncio
+async def test_policy_provider_activates_highest_inactive_version(
+    sf: Callable[[], Session],
+) -> None:
+    with sf() as db:
+        db.add_all([_policy_row(1, False), _policy_row(2, False)])
+        db.commit()
+    policy = await SqlPolicyProvider(sf).active_policy()
+    assert policy.version == 2
+    with sf() as db:
+        active = {r.version for r in db.scalars(select(lm.LeashPolicyRow)) if r.active}
+    assert active == {2}

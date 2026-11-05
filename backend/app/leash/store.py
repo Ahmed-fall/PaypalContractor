@@ -115,8 +115,27 @@ class SqlPolicyProvider:
         with self._sf() as db:
             row = db.scalars(select(LeashPolicyRow).where(LeashPolicyRow.active.is_(True))).first()
             if row is None:
-                row = self._seed_default(db)
+                row = self._bootstrap(db)
             return LeashPolicy.model_validate(row.compiled_json)
+
+    def _bootstrap(self, db: Session) -> LeashPolicyRow:
+        """No active policy: activate the highest existing version, else seed v1."""
+        latest = db.scalars(select(LeashPolicyRow).order_by(LeashPolicyRow.version.desc())).first()
+        if latest is None:
+            return self._seed_default(db)
+        latest.active = True
+        latest.activated_at = utcnow()
+        try:
+            db.commit()
+        except IntegrityError:  # another caller activated a policy first
+            db.rollback()
+            existing = db.scalars(
+                select(LeashPolicyRow).where(LeashPolicyRow.active.is_(True))
+            ).first()
+            if existing is None:
+                raise
+            return existing
+        return latest
 
     def _seed_default(self, db: Session) -> LeashPolicyRow:
         policy = default_policy()
