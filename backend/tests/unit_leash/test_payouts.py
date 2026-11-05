@@ -19,6 +19,7 @@ os.environ.setdefault("PAYPAL_API_BASE_URL", "https://api-m.sandbox.paypal.com")
 os.environ.setdefault("PAYPAL_WEBHOOK_ID", "wh-test-id")
 
 import uuid  # noqa: E402
+from datetime import UTC, datetime  # noqa: E402
 from collections.abc import Callable, Iterator  # noqa: E402
 from datetime import date  # noqa: E402
 from decimal import Decimal  # noqa: E402
@@ -35,7 +36,11 @@ from backend.app.api.errors import ApiError  # noqa: E402
 from backend.app.db import models as dm  # noqa: E402
 from backend.app.db.database import Base  # noqa: E402
 from backend.app.leash import models as lm  # noqa: E402
+from backend.app.leash import service as service_module  # noqa: E402
 from backend.app.leash.payroll import runs  # noqa: E402
+from backend.app.leash.policy import default_policy  # noqa: E402
+from backend.app.leash.service import LeashService, configure  # noqa: E402
+from backend.app.leash.store import DEFAULT_POLICY_SOURCE, SqlDecisionLog, SqlPolicyProvider  # noqa: E402
 from backend.app.services.paypal import _client, payouts, payouts_sync  # noqa: E402
 from backend.app.services.paypal._client import PayPalAPIError  # noqa: E402
 
@@ -79,6 +84,7 @@ def sf(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SessionMaker
     runs._locks.clear()
     payouts_sync._tasks.clear()
     payouts_sync._pollers.clear()
+    configure(LeashService(SqlPolicyProvider(factory), SqlDecisionLog(factory), explainer=None))
     with factory() as db:
         db.add(
             dm.Contract(
@@ -112,7 +118,12 @@ def sf(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SessionMaker
         ):
             db.add(
                 lm.TeamMemberRow(
-                    id=mid, name=name, payout_email=email, hourly_rate=D(rate), active=True
+                    id=mid,
+                    name=name,
+                    payout_email=email,
+                    hourly_rate=D(rate),
+                    first_paid_at=datetime(2026, 9, 30, tzinfo=UTC),
+                    active=True,
                 )
             )
         db.flush()
@@ -144,8 +155,61 @@ def sf(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SessionMaker
                     flags_json=[],
                 )
             )
+        policy = default_policy()
+        now = datetime.now(UTC)
+        db.add(
+            lm.LeashPolicyRow(
+                id="lpol_1",
+                version=policy.version,
+                source_text=DEFAULT_POLICY_SOURCE,
+                compiled_json=policy.model_dump(mode="json"),
+                active=True,
+                created_at=now,
+                activated_at=now,
+            )
+        )
+        db.add(
+            lm.TimesheetUploadRow(
+                id="tsu_1",
+                file_name="t.csv",
+                file_hash="h" * 64,
+                header_signature="sig",
+                row_count=2,
+                status="PARSED",
+            )
+        )
+        db.flush()
+        for eid, mid, name, hours in (
+            ("tse_1", "tm_sara", "Sara", "10.00"),
+            ("tse_2", "tm_youssef", "Youssef", "8.00"),
+        ):
+            db.add(
+                lm.TimesheetEntryRow(
+                    id=eid,
+                    upload_id="tsu_1",
+                    team_member_id=mid,
+                    raw_member_name=name,
+                    work_date=date(2026, 11, 2),
+                    hours=D(hours),
+                    milestone_code="MS-01",
+                )
+            )
+        db.add(
+            dm.PaypalCapture(
+                id="cap_01",
+                milestone_id="ms_01",
+                paypal_order_id="ORDcap_01",
+                paypal_capture_id="PPcap_01",
+                gross_amount=D("850.00"),
+                currency="USD",
+                captured_at=now,
+                source="sandbox",
+                raw_payload_json={},
+            )
+        )
         db.commit()
     yield factory
+    service_module._service = None
     eng.dispose()
 
 
@@ -237,11 +301,17 @@ def test_send_posts_one_batch_and_marks_sent(sf: SessionMaker) -> None:
 
 @respx.mock
 def test_excluded_line_is_left_unsent(sf: SessionMaker) -> None:
-    respx.post(PAYOUTS_URL).mock(return_value=_created())
-    only_sara = [ln for ln in _lines() if ln.line_id == "prl_0002"]
-    asyncio.run(payouts.send_payroll_batch(RUN_ID, only_sara, KEY))
+    route = respx.post(PAYOUTS_URL).mock(return_value=_created())
+    asyncio.run(runs.set_line_action(RUN_ID, "prl_0003", "EXCLUDED", None))
+    ready = asyncio.run(runs.lines_ready_to_send(RUN_ID, []))
+    assert [ln.line_id for ln in ready] == ["prl_0002"]
+    asyncio.run(payouts.send_payroll_batch(RUN_ID, ready, KEY))
+    assert [i["sender_item_id"] for i in json.loads(route.calls[0].request.content)["items"]] == [
+        "prl_0002"
+    ]
     assert _line(sf, "prl_0002").payout_status == "PENDING"
     assert _line(sf, "prl_0003").payout_status is None
+    assert _run(sf).total == D("220.00")
 
 
 @respx.mock
@@ -431,6 +501,10 @@ def _first_paid(sf: SessionMaker, member_id: str) -> Any:
 
 def test_success_sets_first_paid_at_once(sf: SessionMaker) -> None:
     _sent_run(sf)
+    with sf() as db:
+        for member in db.query(lm.TeamMemberRow):
+            member.first_paid_at = None
+        db.commit()
     assert _first_paid(sf, "tm_sara") is None
     payouts_sync.apply_item_status("prl_0002", "SUCCESS")
     first = _first_paid(sf, "tm_sara")
@@ -566,11 +640,17 @@ def test_poll_batch_gives_up_after_max(sf: SessionMaker) -> None:
         return_value=httpx.Response(200, json=_batch_body("PENDING", "PENDING"))
     )
     sleeps: list[float] = []
+    clock = [0.0]
 
     async def fake_sleep(seconds: float) -> None:
         sleeps.append(seconds)
+        clock[0] += seconds
 
-    asyncio.run(payouts_sync.poll_batch(RUN_ID, interval_s=10, max_s=30, sleep=fake_sleep))
+    asyncio.run(
+        payouts_sync.poll_batch(
+            RUN_ID, interval_s=10, max_s=30, sleep=fake_sleep, clock=lambda: clock[0]
+        )
+    )
     assert sleeps == [10, 10, 10]
     assert route.call_count == 4
     assert _run(sf).status == "SENT"
@@ -648,3 +728,163 @@ def test_start_polling_is_idempotent(sf: SessionMaker, monkeypatch: pytest.Monke
 
     asyncio.run(go())
     assert calls == [RUN_ID]
+
+
+@respx.mock
+def test_poll_deadline_uses_wall_clock_not_sum_of_sleeps(sf: SessionMaker) -> None:
+    _sent_run(sf)
+    route = respx.get(f"{PAYOUTS_URL}/5UXD2E8A7EBQJ").mock(
+        return_value=httpx.Response(200, json=_batch_body("PENDING", "PENDING"))
+    )
+    clock = [0.0]
+
+    async def slow_sleep(_seconds: float) -> None:
+        clock[0] += 25.0  # each cycle really takes 25 s although the interval is 10 s
+
+    asyncio.run(
+        payouts_sync.poll_batch(
+            RUN_ID, interval_s=10, max_s=30, sleep=slow_sleep, clock=lambda: clock[0]
+        )
+    )
+    assert route.call_count == 3  # t=0, 25, 50 -> stop; summed sleeps (10, 20, 30) would add one
+
+
+# --- fix round 1: the send re-checks under the lock -------------------------------------------
+
+
+@respx.mock
+def test_stale_excluded_line_is_not_paid(sf: SessionMaker) -> None:
+    stale = _lines()  # what lines_ready_to_send returned before the owner acted
+    with sf() as db:
+        row = db.get(lm.PayrollLineRow, "prl_0003")
+        assert row is not None
+        row.owner_action = "EXCLUDED"
+        db.commit()
+    route = respx.post(PAYOUTS_URL).mock(return_value=_created())
+    with pytest.raises(ApiError) as err:
+        asyncio.run(payouts.send_payroll_batch(RUN_ID, stale, "k"))
+    assert err.value.status_code == 409 and err.value.code == "RUN_NOT_SENDABLE"
+    assert route.call_count == 0
+    assert _run(sf).sender_batch_id is None
+
+
+@respx.mock
+def test_stale_line_that_is_now_denied_is_not_paid(sf: SessionMaker) -> None:
+    stale = _lines()
+    with sf() as db:  # Sara's hours disappear: the re-check denies her line (PR-05)
+        for entry in db.query(lm.TimesheetEntryRow).filter_by(team_member_id="tm_sara"):
+            db.delete(entry)
+        db.commit()
+    route = respx.post(PAYOUTS_URL).mock(return_value=_created())
+    with pytest.raises(ApiError) as err:
+        asyncio.run(payouts.send_payroll_batch(RUN_ID, stale, "k"))
+    assert err.value.status_code == 409 and err.value.code == "RUN_NOT_SENDABLE"
+    assert route.call_count == 0
+
+
+@respx.mock
+def test_foreign_line_id_is_not_posted(sf: SessionMaker) -> None:
+    forged = _lines()[0].model_copy(update={"line_id": "prl_other_run"})
+    route = respx.post(PAYOUTS_URL).mock(return_value=_created())
+    with pytest.raises(ApiError) as err:
+        asyncio.run(payouts.send_payroll_batch(RUN_ID, [forged], "k"))
+    assert err.value.status_code == 409 and err.value.code == "RUN_NOT_SENDABLE"
+    assert route.call_count == 0
+
+
+@respx.mock
+def test_matching_set_sends_from_database_values(sf: SessionMaker) -> None:
+    lines = _lines()
+    tampered = [ln.model_copy(update={"gross": D("999.00")}) for ln in lines]
+    with sf() as db:
+        member = db.get(lm.TeamMemberRow, "tm_sara")
+        assert member is not None
+        member.payout_email = "sb-sara-new@personal.example.com"
+        db.commit()
+    route = respx.post(PAYOUTS_URL).mock(return_value=_created())
+    asyncio.run(payouts.send_payroll_batch(RUN_ID, tampered, "k"))
+    items = json.loads(route.calls[0].request.content)["items"]
+    assert [(i["sender_item_id"], i["amount"]["value"]) for i in items] == [
+        ("prl_0002", "220.00"),
+        ("prl_0003", "200.00"),
+    ]
+    assert items[0]["receiver"] == "sb-sara-new@personal.example.com"
+    assert _run(sf).total == D("420.00")
+
+
+# --- fix round 1: terminal batch status ----------------------------------------------------------
+
+
+def _batch_event(status: str) -> dict[str, Any]:
+    return {
+        "event_type": f"PAYMENT.PAYOUTSBATCH.{status}",
+        "resource": {"batch_header": {"payout_batch_id": "5UXD2E8A7EBQJ", "batch_status": status}},
+    }
+
+
+def test_denied_batch_is_not_regressed_by_late_event(sf: SessionMaker) -> None:
+    _sent_run(sf)
+    asyncio.run(payouts_sync.handle_webhook_event(_batch_event("DENIED")))
+    assert _run(sf).status == "FAILED"
+    asyncio.run(payouts_sync.handle_webhook_event(_batch_event("PROCESSING")))
+    run = _run(sf)
+    assert run.status == "FAILED" and run.batch_status == "DENIED"
+
+
+def test_paid_run_batch_status_is_not_regressed(sf: SessionMaker) -> None:
+    _sent_run(sf)
+    payouts_sync.apply_item_status("prl_0002", "SUCCESS")
+    payouts_sync.apply_item_status("prl_0003", "SUCCESS")
+    asyncio.run(payouts_sync.handle_webhook_event(_batch_event("SUCCESS")))
+    asyncio.run(payouts_sync.handle_webhook_event(_batch_event("PROCESSING")))
+    run = _run(sf)
+    assert run.status == "PAID" and run.batch_status == "SUCCESS"
+
+
+def test_unknown_batch_status_may_move_to_anything(sf: SessionMaker) -> None:
+    _sent_run(sf)
+    with sf() as db:
+        row = db.get(lm.PayrollRunRow, RUN_ID)
+        assert row is not None
+        row.batch_status = "UNKNOWN"
+        db.commit()
+    asyncio.run(payouts_sync.handle_webhook_event(_batch_event("PROCESSING")))
+    assert _run(sf).batch_status == "PROCESSING"
+
+
+# --- fix round 1: webhooks that beat our bookkeeping, and batch id reconciliation ----------------
+
+
+@respx.mock
+def test_webhook_between_201_and_mark_sent_is_applied(
+    sf: SessionMaker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def post_then_webhook(_request: httpx.Request) -> httpx.Response:
+        # The item webhook arrives before send_payroll_batch records the 201.
+        payouts_sync.apply_item_status("prl_0002", "SUCCESS", "ITEM1", "5UXD2E8A7EBQJ")
+        return _created()
+
+    respx.post(PAYOUTS_URL).mock(side_effect=post_then_webhook)
+    _send()
+    assert _line(sf, "prl_0002").payout_status == "SUCCESS"
+    assert _line(sf, "prl_0003").payout_status == "PENDING"
+    assert _run(sf).status == "SENT"
+
+
+def test_webhook_for_line_outside_the_batch_is_ignored(sf: SessionMaker) -> None:
+    _sent_run(sf)
+    with sf() as db:
+        row = db.get(lm.PayrollLineRow, "prl_0003")
+        assert row is not None
+        row.payout_status = None  # excluded: never part of the batch
+        db.commit()
+    payouts_sync.apply_item_status("prl_0003", "SUCCESS")
+    assert _line(sf, "prl_0003").payout_status is None
+
+
+def test_item_webhook_fills_batch_id_of_unknown_run(sf: SessionMaker) -> None:
+    _sent_run(sf, batch_id=None)
+    asyncio.run(payouts_sync.handle_webhook_event(_item_event("prl_0002")))
+    run = _run(sf)
+    assert run.paypal_batch_id == "TNVNLATJ857QW"  # resource.payout_batch_id of the fixture
+    assert _line(sf, "prl_0002").payout_status == "SUCCESS"

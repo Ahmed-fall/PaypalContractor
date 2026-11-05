@@ -22,7 +22,7 @@ from ...leash.models import PayrollLineRow, PayrollRunRow, TeamMemberRow
 from ...leash.payroll import runs
 from ._client import PayPalAPIError, PayPalUnavailable
 from .auth import PayPalAuthError
-from .payouts import get_batch
+from .payouts import TERMINAL_BATCH_STATUSES, get_batch
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +69,10 @@ def _allowed(current: str | None, new: str) -> bool:
 
 
 def apply_item_status(
-    sender_item_id: str, transaction_status: str, payout_item_id: str | None = None
+    sender_item_id: str,
+    transaction_status: str,
+    payout_item_id: str | None = None,
+    payout_batch_id: str | None = None,
 ) -> None:
     """Apply one PayPal item status to its payroll line, then roll the run up."""
     mapped = ITEM_STATUS_MAP.get(transaction_status.upper())
@@ -82,10 +85,26 @@ def apply_item_status(
             logger.warning("payouts.unknown_line", extra={"sender_item_id": sender_item_id[:40]})
             return
         run = db.get(PayrollRunRow, line.run_id)
-        if run is None or run.status not in runs.FINISHED:
+        # The reservation (sender_batch_id) is persisted before the POST, so a webhook that
+        # beats our own bookkeeping still applies; only lines that were in the batch count.
+        in_batch = run is not None and (
+            run.status in runs.FINISHED or run.sender_batch_id is not None
+        )
+        if run is None or not in_batch or line.payout_status is None:
             logger.warning("payouts.line_not_sent", extra={"sender_item_id": sender_item_id[:40]})
             return
         run_id = run.id
+        if (
+            payout_batch_id
+            and run.paypal_batch_id is None
+            and run.batch_status == "UNKNOWN"
+            and db.scalars(
+                select(PayrollRunRow.id).where(PayrollRunRow.paypal_batch_id == payout_batch_id)
+            ).first()
+            is None
+        ):
+            run.paypal_batch_id = payout_batch_id[:64]  # reconciles an UNKNOWN run
+            db.commit()
         if _allowed(line.payout_status, mapped):
             line.paypal_transaction_status = transaction_status.upper()[:16]
             line.payout_status = mapped
@@ -119,12 +138,14 @@ def _set_batch_status(
                     PayrollRunRow.paypal_batch_id.is_(None),
                 )
             ).first()
-            if run is not None and paypal_batch_id and run.status in runs.FINISHED:
+            if run is not None and paypal_batch_id:
                 run.paypal_batch_id = paypal_batch_id  # reconciles an UNKNOWN run
-        if run is None or run.status not in runs.FINISHED:
+        if run is None or not (run.status in runs.FINISHED or run.sender_batch_id is not None):
             return None
-        run.batch_status = batch_status.upper()[:16]
         run_id = run.id
+        if run.batch_status in TERMINAL_BATCH_STATUSES:
+            return run_id  # a late or out-of-order batch event never regresses a final status
+        run.batch_status = batch_status.upper()[:16]
         db.commit()
     runs.recompute_run_status(run_id)
     return run_id
@@ -167,12 +188,14 @@ async def poll_batch(
     interval_s: float | None = None,
     max_s: float | None = None,
     sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
+    clock: Callable[[], float] | None = None,
 ) -> None:
     """Poll the run's batch until every item is terminal or ``max_s`` has passed."""
     settings = get_settings()
     interval = float(interval_s if interval_s is not None else settings.payouts_poll_seconds)
     limit = float(max_s if max_s is not None else settings.payouts_poll_max_seconds)
-    elapsed = 0.0
+    now = clock or asyncio.get_running_loop().time
+    started = now()
     while True:
         batch_id, settled = await asyncio.to_thread(_poll_state, run_id)
         if settled:
@@ -198,10 +221,9 @@ async def poll_batch(
             _, settled = await asyncio.to_thread(_poll_state, run_id)
             if settled:
                 return
-        if elapsed >= limit:
+        if now() - started >= limit:
             return
         await sleep(interval)
-        elapsed += interval
 
 
 def _poller_done(run_id: str, task: asyncio.Task[None]) -> None:
@@ -258,7 +280,13 @@ def _handle_item_event(event_type: str, resource: dict[str, Any]) -> None:
         logger.warning("payouts.webhook_malformed", extra={"event_type": event_type})
         return
     item_id = resource.get("payout_item_id")
-    apply_item_status(sender_item_id, status, item_id if isinstance(item_id, str) else None)
+    batch_id = resource.get("payout_batch_id")
+    apply_item_status(
+        sender_item_id,
+        status,
+        item_id if isinstance(item_id, str) else None,
+        batch_id if isinstance(batch_id, str) else None,
+    )
 
 
 def _handle_batch_event(event_type: str, resource: dict[str, Any]) -> None:

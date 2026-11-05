@@ -193,6 +193,11 @@ def _lock(kind: str, key: str) -> asyncio.Lock:
     return _locks.setdefault((kind, key), asyncio.Lock())
 
 
+def run_lock(run_id: str) -> asyncio.Lock:
+    """The per-run lock that serialises checks, owner actions and the send."""
+    return _lock("run", run_id)
+
+
 def _prepare_run(milestone_id: str) -> tuple[str, bool] | None:
     """(run_id, created). None when the milestone is unknown or has no timesheet hours."""
     roster = _roster_snapshot()
@@ -349,7 +354,9 @@ def _history(db: Session, member_id: str, run_id: str) -> MemberHistory:
             if paid is not None and (last is None or paid > last):
                 last = paid
         if run.milestone_id is not None:
-            code = db.scalars(select(Milestone.code).where(Milestone.id == run.milestone_id)).first()
+            code = db.scalars(
+                select(Milestone.code).where(Milestone.id == run.milestone_id)
+            ).first()
             if code is not None:
                 milestones.add(code)
     return MemberHistory(last_paid_at=last, paid_milestones=frozenset(milestones))
@@ -925,7 +932,9 @@ async def upload_timesheet(
         table = read_table(data, filename)
         store = SqlMappingStore(_factory_for(db))
         resolution = await resolve_mapping(table, store, _load_mapper())
-        entries = parse_entries(table, resolution.mapping) if resolution.mapping is not None else None
+        entries = (
+            parse_entries(table, resolution.mapping) if resolution.mapping is not None else None
+        )
     except TimesheetError as exc:
         raise _timesheet_api_error(exc) from exc
 
@@ -1030,6 +1039,7 @@ __all__ = [
     "margin_rows",
     "on_milestone_payment",
     "recompute_run_status",
+    "run_lock",
     "set_line_action",
     "update_member",
     "upload_timesheet",

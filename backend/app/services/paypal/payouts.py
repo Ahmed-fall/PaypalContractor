@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
@@ -34,6 +35,7 @@ logger = logging.getLogger(__name__)
 _CENT = Decimal("0.01")
 _PAYOUTS_PATH = "/v1/payments/payouts"
 _DEFINITE_REJECTIONS = (400, 422)
+TERMINAL_BATCH_STATUSES = frozenset({"SUCCESS", "DENIED", "CANCELED"})
 
 
 def _money(value: Decimal) -> str:
@@ -95,8 +97,8 @@ class _Reserved:
     request_id: str
 
 
-def _reserve(run_id: str, lines: list[PayrollLineOut], idempotency_key: str) -> str | _Reserved:
-    """Return the stored batch id, or persist the reservation and return the body to POST."""
+def _existing(run_id: str, idempotency_key: str) -> str | None:
+    """The stored batch id for a repeat call, None for a fresh run, else a 409."""
     with runs.session_factory() as db:
         run = db.get(PayrollRunRow, run_id)
         if run is None:
@@ -105,6 +107,17 @@ def _reserve(run_id: str, lines: list[PayrollLineOut], idempotency_key: str) -> 
             if run.idempotency_key == idempotency_key:
                 return run.paypal_batch_id
             raise _not_sendable(_ALREADY_SENT)
+        if run.sender_batch_id is not None or run.status in runs.FINISHED:
+            raise _not_sendable(_ALREADY_SENT)
+        return None
+
+
+def _reserve(run_id: str, lines: list[PayrollLineOut], idempotency_key: str) -> _Reserved:
+    """Persist the reservation (batch id, key, total, PENDING lines); return the body to POST."""
+    with runs.session_factory() as db:
+        run = db.get(PayrollRunRow, run_id)
+        if run is None:
+            raise ApiError(404, "RUN_NOT_FOUND", "Payroll run not found.")
         if run.sender_batch_id is not None or run.status in runs.FINISHED:
             raise _not_sendable(_ALREADY_SENT)
         if not lines:
@@ -127,10 +140,15 @@ def _reserve(run_id: str, lines: list[PayrollLineOut], idempotency_key: str) -> 
             .values(
                 sender_batch_id=body["sender_batch_header"]["sender_batch_id"],
                 idempotency_key=idempotency_key,
+                total=sum((ln.gross for ln in lines), Decimal("0.00")),
             )
         )
         if claimed.rowcount != 1:  # type: ignore[attr-defined]
             raise _not_sendable(_ALREADY_SENT)
+        ids = {ln.line_id for ln in lines}
+        for row in db.scalars(select(PayrollLineRow).where(PayrollLineRow.run_id == run_id)):
+            if row.id in ids:
+                row.payout_status = "PENDING"  # part of the batch from now on
         db.commit()
         return _Reserved(body, request_id_for(run_id))
 
@@ -147,13 +165,16 @@ def _mark_sent(
             return
         if paypal_batch_id is not None:
             run.paypal_batch_id = paypal_batch_id
-        run.batch_status = batch_status[:16]
+        # A webhook may have landed since the 201: never regress a terminal batch status.
+        if run.batch_status not in TERMINAL_BATCH_STATUSES:
+            run.batch_status = batch_status[:16]
         run.sent_at = run.sent_at or utcnow()
         run.status = "SENT"
         for row in db.scalars(select(PayrollLineRow).where(PayrollLineRow.run_id == run_id)):
-            if row.id in line_ids:
+            if row.id in line_ids and row.payout_status is None:
                 row.payout_status = "PENDING"
         db.commit()
+    runs.recompute_run_status(run_id)
 
 
 def _release(run_id: str) -> None:
@@ -163,6 +184,9 @@ def _release(run_id: str) -> None:
         if run is not None and run.paypal_batch_id is None and run.status not in runs.FINISHED:
             run.sender_batch_id = None
             run.idempotency_key = None
+            for row in db.scalars(select(PayrollLineRow).where(PayrollLineRow.run_id == run_id)):
+                if row.payout_status == "PENDING":
+                    row.payout_status = None
             db.commit()
 
 
@@ -176,17 +200,32 @@ def _unknown(run_id: str, line_ids: list[str], reason: str) -> None:
     logger.error("payroll.batch_unknown", extra={"run_id": run_id, "reason": reason})
 
 
-async def send_payroll_batch(run_id: str, lines: list[PayrollLineOut], idempotency_key: str) -> str:
+async def send_payroll_batch(
+    run_id: str,
+    lines: list[PayrollLineOut],
+    idempotency_key: str,
+    *,
+    approve_run_flags: Sequence[str] = (),
+) -> str:
     """POST one Payouts batch for the run and return PayPal's batch id.
 
     Safe to call twice: the same ``idempotency_key`` returns the stored batch id, any
-    other call on a run that already has a ``sender_batch_id`` is a 409.
+    other call on a run that already has a ``sender_batch_id`` is a 409. The caller's
+    ``lines`` only name what it expects to pay: under the run lock the whole gate is
+    re-run and the batch is built from that fresh database result alone (gross and the
+    roster's current email). If the two sets of line ids differ the run changed
+    meanwhile, so nothing is sent.
     """
-    line_ids = [ln.line_id for ln in lines]
-    async with runs._lock("run", run_id):
+    async with runs.run_lock(run_id):
+        stored = await asyncio.to_thread(_existing, run_id, idempotency_key)
+        if stored is not None:
+            return stored
+        ready = await runs._lines_ready_locked(run_id, list(approve_run_flags))
+        if {ln.line_id for ln in lines} != {ln.line_id for ln in ready}:
+            raise _not_sendable("The payroll run changed. Refresh it and try again.")
+        lines = ready
+        line_ids = [ln.line_id for ln in lines]
         reserved = await asyncio.to_thread(_reserve, run_id, lines, idempotency_key)
-        if isinstance(reserved, str):
-            return reserved
         try:
             result = await paypal_request(
                 "POST", _PAYOUTS_PATH, request_id=reserved.request_id, json_body=reserved.body
