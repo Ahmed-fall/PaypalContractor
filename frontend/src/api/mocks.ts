@@ -21,7 +21,12 @@ import type {
   LedgerRow,
   MarginResponse,
   MarginRow,
+  PayrollLineUpdate,
+  PayrollRunOut,
+  PayrollSendResponse,
   PersistedContractExtraction,
+  PolicyCompileResponse,
+  LeashPolicy,
   RemediationInvoiceRecord,
   RemediationRequest,
   RemediationResponse,
@@ -126,6 +131,7 @@ export function setMockLatency(ms: number): void {
 /** Restore the seeded demo state (also what POST /demo/reset does). */
 export function resetMockState(): void {
   state = seed();
+  payrollMock = { run: null, sentGets: 0 };
   try {
     sessionStorage.removeItem(PERSIST_KEY);
   } catch {
@@ -649,6 +655,94 @@ function leashFixture(name: string, status = 200): TransportResponse {
   return body === null ? fail(404, "NOT_FOUND", `Fixture ${name} is not available.`) : ok(body, status);
 }
 
+/**
+ * The payroll run is stateful for the session so the demo can be clicked through:
+ * GET -> exclude Omar -> send (202) -> two GETs say SENT -> the next says PAID.
+ * Kept out of the persisted state on purpose; resetMockState() clears it.
+ */
+let payrollMock: { run: PayrollRunOut | null; sentGets: number } = { run: null, sentGets: 0 };
+
+function currentRun(): PayrollRunOut | null {
+  if (!payrollMock.run) payrollMock.run = pick<PayrollRunOut>(leashFixtures, "payroll_run_awaiting_approval.json");
+  return payrollMock.run;
+}
+
+function getRun(): TransportResponse {
+  const run = currentRun();
+  if (!run) return fail(404, "NOT_FOUND", "Fixture payroll_run_awaiting_approval.json is not available.");
+  if (run.status === "SENT") {
+    if (payrollMock.sentGets < 2) {
+      payrollMock.sentGets += 1;
+    } else {
+      run.status = "PAID";
+      for (const l of run.lines) if (l.payout_status === "PENDING") l.payout_status = "SUCCESS";
+    }
+  }
+  return ok(run);
+}
+
+function patchRunLine(req: TransportRequest, lineId: string): TransportResponse {
+  const run = currentRun();
+  const action = (req.body as Partial<PayrollLineUpdate> | undefined)?.owner_action;
+  if (!run) return fail(404, "NOT_FOUND", "No payroll run is available.");
+  if (action !== "APPROVED" && action !== "EXCLUDED") {
+    return fail(422, "VALIDATION_ERROR", "owner_action must be APPROVED or EXCLUDED.", { fields: { owner_action: "invalid" } });
+  }
+  if (run.status === "SENT" || run.status === "PAID" || run.status === "PARTIAL" || run.status === "FAILED") {
+    return fail(409, "RUN_NOT_SENDABLE", "This run was already sent and can't be changed.");
+  }
+  const line = run.lines.find((l) => l.line_id === lineId);
+  if (!line) return fail(404, "NOT_FOUND", `Line ${lineId} was not found.`);
+  if (line.decision === "DENY" || line.flags.includes("DEFAULT")) {
+    if (action === "APPROVED") return fail(409, "LINE_NOT_CHECKED", "Leash couldn't check this line yet.");
+  }
+  if (action === "EXCLUDED" && lineId === "prl_0001") {
+    // The fixture pair: excluding Omar drops PR-06 and the total to $420.00.
+    const after = pick<PayrollRunOut>(leashFixtures, "payroll_run_after_exclude.json");
+    if (after) payrollMock.run = after;
+  } else {
+    line.owner_action = action;
+  }
+  return ok(payrollMock.run);
+}
+
+function sendRun(): TransportResponse {
+  const run = currentRun();
+  const sent = pick<PayrollSendResponse>(leashFixtures, "payroll_send_response.json");
+  if (!run || !sent) return fail(404, "NOT_FOUND", "Fixture payroll_send_response.json is not available.");
+  if (run.status === "SENT" || run.status === "PAID") return ok(sent, 202);
+  const openLines = run.lines.filter((l) => l.decision === "ASK" && l.owner_action === null).map((l) => l.line_id);
+  const openFlags = run.run_decision === "ASK" ? run.run_flags : [];
+  if (openLines.length > 0 || openFlags.length > 0) {
+    return fail(409, "LEASH_ASK_UNRESOLVED", "Some checks still need your decision.", {
+      open_asks: openLines,
+      open_run_flags: openFlags,
+    });
+  }
+  run.status = "SENT";
+  run.sender_batch_id = sent.sender_batch_id;
+  for (const l of run.lines) {
+    if (l.owner_action !== "EXCLUDED") l.payout_status = "PENDING";
+  }
+  payrollMock.sentGets = 0;
+  return ok(sent, 202);
+}
+
+function echoPolicyDraft(req: TransportRequest): TransportResponse {
+  const policy = req.body as LeashPolicy | undefined;
+  if (!policy || !Array.isArray(policy.rules)) {
+    return fail(422, "VALIDATION_ERROR", "Send a policy with a rules list.", { fields: { rules: "required" } });
+  }
+  const res: PolicyCompileResponse = {
+    draft_version: policy.version,
+    status: "DRAFT",
+    policy,
+    cards: ["Draft saved"],
+    test_cases: [],
+  };
+  return ok(res);
+}
+
 // ------------------------------------------------------------------ router
 
 type Handler = (req: TransportRequest, params: string[]) => TransportResponse;
@@ -664,6 +758,7 @@ const routes: Array<[string, RegExp, Handler]> = [
   ["GET", /^\/leash\/ledger\/margin$/, () => margin()],
   ["GET", /^\/leash\/decisions$/, (r) => decisions(r)],
   ["GET", /^\/leash\/policy$/, () => leashFixture("active_policy.json")],
+  ["POST", /^\/leash\/policy$/, (r) => echoPolicyDraft(r)],
   ["POST", /^\/leash\/policy\/compile$/, () => leashFixture("policy_compile_response.json")],
   ["POST", /^\/leash\/policy\/activate$/, (r) =>
     ok({ version: (r.body as { version?: number })?.version ?? 1, active: true, activated_at: new Date().toISOString() })],
@@ -679,10 +774,16 @@ const routes: Array<[string, RegExp, Handler]> = [
   }],
   ["POST", /^\/leash\/timesheets$/, () => leashFixture("timesheet_mapping_required.json", 201)],
   ["POST", /^\/leash\/timesheets\/([^/]+)\/mapping$/, () => leashFixture("timesheet_parsed.json")],
+  ["POST", /^\/leash\/timesheets\/([^/]+)\/discard$/, (_r, [id]) =>
+    ok({ upload_id: decodeURIComponent(id), status: "REJECTED" })],
+  ["GET", /^\/leash\/payroll\/runs$/, () => {
+    const run = currentRun();
+    return ok(run ? [run] : []);
+  }],
   ["POST", /^\/leash\/payroll\/runs$/, () => leashFixture("payroll_run_awaiting_approval.json", 201)],
-  ["GET", /^\/leash\/payroll\/runs\/([^/]+)$/, () => leashFixture("payroll_run_awaiting_approval.json")],
-  ["PATCH", /^\/leash\/payroll\/runs\/([^/]+)\/lines\/([^/]+)$/, () => leashFixture("payroll_run_after_exclude.json")],
-  ["POST", /^\/leash\/payroll\/runs\/([^/]+)\/send$/, () => leashFixture("payroll_send_response.json", 202)],
+  ["GET", /^\/leash\/payroll\/runs\/([^/]+)$/, () => getRun()],
+  ["PATCH", /^\/leash\/payroll\/runs\/([^/]+)\/lines\/([^/]+)$/, (r, [, lineId]) => patchRunLine(r, decodeURIComponent(lineId))],
+  ["POST", /^\/leash\/payroll\/runs\/([^/]+)\/send$/, () => sendRun()],
   ["POST", /^\/demo\/reset$/, () => {
     resetMockState();
     return ok({ status: "reset" });
