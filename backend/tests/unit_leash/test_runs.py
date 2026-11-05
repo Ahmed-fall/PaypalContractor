@@ -15,8 +15,10 @@ os.environ.setdefault("DEMO_KEY", "test-demo-key-0123456789abcdef")
 os.environ.setdefault("PAYPAL_API_BASE_URL", "https://api-m.sandbox.paypal.com")
 os.environ.setdefault("PAYPAL_WEBHOOK_ID", "wh-test-id")
 
+import asyncio  # noqa: E402
+import time  # noqa: E402
 from collections.abc import Callable, Iterator  # noqa: E402
-from datetime import UTC, date, datetime  # noqa: E402
+from datetime import UTC, date, datetime, timedelta  # noqa: E402
 from decimal import Decimal  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Any  # noqa: E402
@@ -24,6 +26,7 @@ from typing import Any  # noqa: E402
 import pytest  # noqa: E402
 from sqlalchemy import create_engine, event, select  # noqa: E402
 from sqlalchemy.engine import Engine  # noqa: E402
+from sqlalchemy.exc import IntegrityError  # noqa: E402
 from sqlalchemy.orm import Session, sessionmaker  # noqa: E402
 
 from backend.app.api.errors import ApiError  # noqa: E402
@@ -36,6 +39,7 @@ from backend.app.leash.seed import seed_leash_demo  # noqa: E402
 from backend.app.leash.service import LeashService, configure  # noqa: E402
 from backend.app.leash.store import SqlDecisionLog, SqlPolicyProvider  # noqa: E402
 from backend.app.schemas.contracts import (  # noqa: E402
+    GuardResult,
     LeashDecision,
     TeamMemberCreate,
     TeamMemberUpdate,
@@ -63,6 +67,7 @@ def sf(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SessionMaker
     factory = sessionmaker(bind=eng, expire_on_commit=False, future=True)
     monkeypatch.setattr(runs, "session_factory", factory)
     monkeypatch.setattr(runs, "_load_mapper", lambda: None)
+    runs._locks.clear()
     configure(
         LeashService(SqlPolicyProvider(factory), SqlDecisionLog(factory), explainer=None)
     )
@@ -513,3 +518,211 @@ def test_roster_services(sf: SessionMaker) -> None:
         with pytest.raises(ApiError) as missing:
             runs.update_member(db, "tm_nope", TeamMemberUpdate(active=False))
         assert missing.value.status_code == 404
+
+
+# --- fix round 1 -----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_concurrent_h2_creates_a_single_run(demo: SessionMaker) -> None:
+    ids = await asyncio.gather(*[runs.on_milestone_payment("ms_01") for _ in range(6)])
+    await runs.wait_for_background()
+
+    assert len(set(ids)) == 1 and ids[0] is not None
+    assert _count(demo, lm.PayrollRunRow) == 1
+    assert _count(demo, lm.PayrollLineRow) == 3
+    assert _count(demo, lm.LeashDecisionRow) == 4  # one check of one run
+
+
+def test_database_allows_one_open_run_per_milestone(demo: SessionMaker) -> None:
+    def new_run(run_id: str) -> lm.PayrollRunRow:
+        return lm.PayrollRunRow(
+            id=run_id,
+            mode="MILESTONE",
+            milestone_id="ms_01",
+            status="PREPARED",
+            total=D("0.00"),
+            cash_in_snapshot=D("0.00"),
+            cash_used_pct=D("0.00"),
+        )
+
+    with demo() as db:
+        db.add(new_run("prn_a"))
+        db.commit()
+        db.add(new_run("prn_b"))
+        with pytest.raises(IntegrityError):
+            db.commit()
+        db.rollback()
+        first = db.get(lm.PayrollRunRow, "prn_a")
+        assert first is not None
+        first.status = "SENT"
+        db.commit()
+        db.add(new_run("prn_b"))  # fine once the first is sent
+        db.commit()
+
+
+async def _send_first_run(demo: SessionMaker, payout_status: str | None) -> str:
+    first = await _prepared(demo)
+    omar = _line(runs.get_run_out(first), "Omar")
+    await runs.set_line_action(first, omar.line_id, "EXCLUDED", None)
+    ready = await runs.lines_ready_to_send(first, [])
+    assert {ln.member_name for ln in ready} == {"Sara", "Youssef"}
+    with demo() as db:
+        run = db.get(lm.PayrollRunRow, first)
+        assert run is not None
+        run.status = "SENT"
+        for row in db.scalars(select(lm.PayrollLineRow)):
+            if row.owner_action != "EXCLUDED":
+                row.payout_status = payout_status
+        _capture(db, "500.00", "cap_02")  # the client pays the rest of MS-01
+        db.commit()
+    second = await runs.on_milestone_payment("ms_01")
+    await runs.wait_for_background()
+    assert second is not None and second != first
+    return second
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payout_status", ["PENDING", "UNCLAIMED", "SUCCESS", None])
+async def test_follow_up_run_denies_unsettled_members(
+    demo: SessionMaker, payout_status: str | None
+) -> None:
+    second = await _send_first_run(demo, payout_status)
+    out = runs.get_run_out(second)
+    for name in ("Sara", "Youssef"):
+        line = _line(out, name)
+        assert (line.decision, line.flags) == (LeashDecision.DENY, ["PR-07"])
+
+
+@pytest.mark.asyncio
+async def test_failed_items_may_be_paid_again(demo: SessionMaker) -> None:
+    second = await _send_first_run(demo, "FAILED")
+    out = runs.get_run_out(second)
+    for name in ("Sara", "Youssef"):
+        assert _line(out, name).decision == LeashDecision.ALLOW
+
+
+@pytest.mark.asyncio
+async def test_stale_check_cannot_bypass_pr06_approval(
+    demo: SessionMaker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = await _prepared(demo)
+    omar = _line(runs.get_run_out(run_id), "Omar")
+    real = runs._persist_check
+    calls = {"n": 0}
+
+    def slow_first(*args: Any) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            time.sleep(0.4)  # the EXCLUDED click's check is still in flight
+        real(*args)
+
+    monkeypatch.setattr(runs, "_persist_check", slow_first)
+    first = asyncio.create_task(runs.set_line_action(run_id, omar.line_id, "EXCLUDED", None))
+    await asyncio.sleep(0.15)
+    second = asyncio.create_task(runs.set_line_action(run_id, omar.line_id, "APPROVED", None))
+    await asyncio.sleep(0)
+    gate = asyncio.create_task(runs.lines_ready_to_send(run_id, []))
+    done = await asyncio.gather(first, second, gate, return_exceptions=True)
+
+    assert isinstance(done[2], ApiError)
+    assert done[2].code == "LEASH_ASK_UNRESOLVED"
+    assert (done[2].details or {})["open_run_flags"] == ["PR-06"]
+
+
+@pytest.mark.asyncio
+async def test_approval_expires_when_the_email_changes_again(demo: SessionMaker) -> None:
+    run_id = await _prepared(demo)
+    omar = _line(runs.get_run_out(run_id), "Omar")
+    await runs.set_line_action(run_id, omar.line_id, "APPROVED", None)
+    assert len(await runs.lines_ready_to_send(run_id, ["PR-06"])) == 3
+
+    with demo() as db:
+        member = db.scalars(select(lm.TeamMemberRow).where(lm.TeamMemberRow.name == "Omar")).one()
+        runs.update_member(db, member.id, TeamMemberUpdate(payout_email="omar.newer@example.com"))
+    with pytest.raises(ApiError) as caught:
+        await runs.lines_ready_to_send(run_id, ["PR-06"])
+    assert caught.value.code == "LEASH_ASK_UNRESOLVED"
+    open_asks = (caught.value.details or {})["open_asks"]
+    assert [a["line_id"] for a in open_asks] == [omar.line_id]
+    assert _line(runs.get_run_out(run_id), "Omar").owner_action is None
+
+
+@pytest.mark.asyncio
+async def test_approval_does_not_cover_a_new_flag(demo: SessionMaker) -> None:
+    with demo() as db:
+        sara = db.scalars(select(lm.TeamMemberRow).where(lm.TeamMemberRow.name == "Sara")).one()
+        sara.first_paid_at = None  # PR-03 only
+        db.commit()
+    run_id = await _prepared(demo)
+    out = runs.get_run_out(run_id)
+    sara_line = _line(out, "Sara")
+    assert sara_line.flags == ["PR-03"]
+    omar = _line(out, "Omar")
+    await runs.set_line_action(run_id, omar.line_id, "APPROVED", None)
+    await runs.set_line_action(run_id, sara_line.line_id, "APPROVED", None)
+    assert len(await runs.lines_ready_to_send(run_id, ["PR-06"])) == 3
+
+    with demo() as db:  # PR-01 appears, but the email change predates the approval
+        sara = db.scalars(select(lm.TeamMemberRow).where(lm.TeamMemberRow.name == "Sara")).one()
+        sara.email_changed_at = datetime.now(UTC) - timedelta(hours=1)
+        db.commit()
+    with pytest.raises(ApiError) as caught:
+        await runs.lines_ready_to_send(run_id, ["PR-06"])
+    asks = (caught.value.details or {})["open_asks"]
+    assert [a["line_id"] for a in asks] == [sara_line.line_id]
+    assert sorted(asks[0]["flags"]) == ["PR-01", "PR-03"]
+
+
+@pytest.mark.asyncio
+async def test_guard_denied_line_does_not_count_toward_total(
+    demo: SessionMaker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = runs.decide
+
+    async def deny_sara(action: Any, facts: dict[str, Any], subject_id: str) -> GuardResult:
+        result = await real(action, facts, subject_id)
+        if facts.get("member_key") == "sara":
+            return result.model_copy(update={"decision": LeashDecision.DENY})
+        return result
+
+    monkeypatch.setattr(runs, "decide", deny_sara)
+    out = runs.get_run_out(await _prepared(demo))
+    assert (out.total, out.cash_used_pct) == (D("500.00"), D("58.82"))
+
+
+@pytest.mark.asyncio
+async def test_recheck_refreshes_hours_and_gross(demo: SessionMaker) -> None:
+    run_id = await _prepared(demo)
+    with demo() as db:
+        upload = db.scalars(select(lm.TimesheetUploadRow)).first()
+        sara = db.scalars(select(lm.TeamMemberRow).where(lm.TeamMemberRow.name == "Sara")).one()
+        assert upload is not None
+        db.add(
+            lm.TimesheetEntryRow(
+                id="tse_more",
+                upload_id=upload.id,
+                team_member_id=sara.id,
+                raw_member_name="Sara",
+                work_date=date(2026, 11, 5),
+                hours=D("2.00"),
+                milestone_code="MS-01",
+            )
+        )
+        db.commit()
+    out = await runs.check_run(run_id)
+    assert (_line(out, "Sara").hours, _line(out, "Sara").gross) == (D("12.00"), D("264.00"))
+    assert out.total == D("764.00")
+
+
+def test_roster_conflict_kind_maps_to_codes(sf: SessionMaker) -> None:
+    with sf() as db:
+        runs.create_member(
+            db, TeamMemberCreate(name="Lina", payout_email="a@example.com", hourly_rate=D("30.00"))
+        )
+        with pytest.raises(ApiError) as same_name:
+            runs.create_member(
+                db,
+                TeamMemberCreate(name="LINA", payout_email="b@example.com", hourly_rate=D("30.00")),
+            )
+    assert (same_name.value.status_code, same_name.value.code) == (409, "MEMBER_NAME_IN_USE")

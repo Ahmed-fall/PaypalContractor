@@ -7,6 +7,12 @@ reach the guard as ``facts["payroll_check"]`` and the guard can only make them
 stricter. Money is ``Decimal`` only. Every public async function opens its own
 sessions through the module-level ``session_factory`` (tests point it at a temp DB).
 Facts sent to ``decide`` carry no email and no name, only the member key.
+
+Concurrency: one ``asyncio.Lock`` per milestone serialises run preparation and one per
+run serialises every check, owner action and send-gate read, so a stale check can never
+overwrite newer state. The locks are per process (the demo runs a single uvicorn
+worker); across processes the partial unique index ``one_open_run_per_milestone`` keeps
+a single open run per milestone.
 """
 
 from __future__ import annotations
@@ -180,6 +186,13 @@ def _roster_snapshot() -> InMemoryRoster:
 # --- H2 ------------------------------------------------------------------------------
 
 
+_locks: dict[tuple[str, str], asyncio.Lock] = {}
+
+
+def _lock(kind: str, key: str) -> asyncio.Lock:
+    return _locks.setdefault((kind, key), asyncio.Lock())
+
+
 def _prepare_run(milestone_id: str) -> tuple[str, bool] | None:
     """(run_id, created). None when the milestone is unknown or has no timesheet hours."""
     roster = _roster_snapshot()
@@ -196,9 +209,6 @@ def _prepare_run(milestone_id: str) -> tuple[str, bool] | None:
             return None
         cash_in = cash_in_for_milestone(db, milestone_id)
         total = run_total(drafts, set(), set())
-        previous = len(
-            db.scalars(select(PayrollRunRow.id).where(PayrollRunRow.milestone_id == milestone_id)).all()
-        )
         run = PayrollRunRow(
             id=new_id("prn"),
             mode="MILESTONE",
@@ -207,31 +217,30 @@ def _prepare_run(milestone_id: str) -> tuple[str, bool] | None:
             total=total,
             cash_in_snapshot=cash_in,
             cash_used_pct=cash_used_pct(total, cash_in),
-            idempotency_key=f"h2:{milestone_id}:{previous}",
             warnings_json=[
                 {"code": "PR-05", "member": d.display_name} for d in drafts if d.member is None
             ],
         )
-        db.add(run)
-        db.flush()
-        for draft in drafts:
-            if draft.member is None or draft.rate is None:
-                continue
-            db.add(
-                PayrollLineRow(
-                    id=new_id("prl"),
-                    run_id=run.id,
-                    team_member_id=draft.member.member_id,
-                    hours=draft.hours,
-                    rate=draft.rate,
-                    gross=draft.gross,
-                    decision="ASK",  # fail closed until the checks have run
-                    flags_json=[],
-                )
-            )
         try:
+            db.add(run)
+            db.flush()
+            for draft in drafts:
+                if draft.member is None or draft.rate is None:
+                    continue
+                db.add(
+                    PayrollLineRow(
+                        id=new_id("prl"),
+                        run_id=run.id,
+                        team_member_id=draft.member.member_id,
+                        hours=draft.hours,
+                        rate=draft.rate,
+                        gross=draft.gross,
+                        decision="ASK",  # fail closed until the checks have run
+                        flags_json=[],
+                    )
+                )
             db.commit()
-        except IntegrityError:
+        except IntegrityError:  # another process won the one-open-run index
             db.rollback()
             raced = _open_run(db, milestone_id)
             if raced is None:
@@ -259,18 +268,14 @@ def _task_done(task: asyncio.Task[Any]) -> None:
 
 async def on_milestone_payment(milestone_id: str) -> str | None:
     """Hook H2: prepare the milestone's payroll run and check it in the background."""
-    prepared = await asyncio.to_thread(_prepare_run, milestone_id)
+    async with _lock("milestone", milestone_id):
+        prepared = await asyncio.to_thread(_prepare_run, milestone_id)
     if prepared is None:
         return None
     run_id, created = prepared
     if not created:
         return run_id
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        await check_run(run_id)
-        return run_id
-    task = loop.create_task(check_run(run_id))
+    task = asyncio.get_running_loop().create_task(check_run(run_id))
     _tasks.add(task)
     task.add_done_callback(_task_done)
     return run_id
@@ -294,6 +299,9 @@ class _LineIn:
     rate: Decimal
     gross: Decimal
     owner_action: str | None
+    owner_action_at: datetime | None
+    owner_flags: tuple[str, ...]
+    email_changed_at: datetime | None
 
 
 @dataclass
@@ -308,22 +316,38 @@ class _Inputs:
     histories: dict[str, MemberHistory]
 
 
+_COUNTS_AS_PAID = frozenset({"SUCCESS", "PENDING", "UNCLAIMED"})
+
+
 def _history(db: Session, member_id: str, run_id: str) -> MemberHistory:
+    """PR-07 treats a line as paid until it fails: SUCCESS, PENDING, UNCLAIMED or just sent.
+
+    ``last_paid_at`` (PR-01) stays SUCCESS-only.
+    """
     rows = db.execute(
         select(PayrollLineRow, PayrollRunRow)
         .join(PayrollRunRow, PayrollRunRow.id == PayrollLineRow.run_id)
         .where(
             PayrollLineRow.team_member_id == member_id,
-            PayrollLineRow.payout_status == "SUCCESS",
             PayrollLineRow.run_id != run_id,
+            PayrollRunRow.status.in_(("SENT", "PAID", "PARTIAL")),
         )
     ).all()
     last: datetime | None = None
     milestones: set[str] = set()
     for line, run in rows:
-        paid = aware(run.sent_at) or aware(line.owner_action_at)
-        if paid is not None and (last is None or paid > last):
-            last = paid
+        if line.owner_action == "EXCLUDED":
+            continue
+        status = line.payout_status
+        if status is None:  # just sent, unless it was never sendable
+            if line.decision == "DENY" or line.gross <= 0:
+                continue
+        elif status not in _COUNTS_AS_PAID:
+            continue  # FAILED: may be paid again
+        if status == "SUCCESS":
+            paid = aware(run.sent_at) or aware(line.owner_action_at)
+            if paid is not None and (last is None or paid > last):
+                last = paid
         if run.milestone_id is not None:
             code = db.scalars(select(Milestone.code).where(Milestone.id == run.milestone_id)).first()
             if code is not None:
@@ -356,8 +380,24 @@ def _gather_inputs(run_id: str) -> _Inputs:
         for row in db.scalars(select(PayrollLineRow).where(PayrollLineRow.run_id == run_id)):
             member = db.get(TeamMemberRow, row.team_member_id)
             key = normalise_name(member.name) if member is not None else row.team_member_id
+            hours, rate, gross = row.hours, row.rate, row.gross
+            draft = drafts.get(row.team_member_id)
+            if draft is not None and draft.rate is not None and run.status not in FINISHED:
+                # Until it is sent the line follows the current timesheet and roster rate.
+                hours, rate, gross = draft.hours, draft.rate, draft.gross
             lines.append(
-                _LineIn(row.id, row.team_member_id, key, row.hours, row.rate, row.gross, row.owner_action)
+                _LineIn(
+                    row.id,
+                    row.team_member_id,
+                    key,
+                    hours,
+                    rate,
+                    gross,
+                    row.owner_action,
+                    aware(row.owner_action_at),
+                    tuple(row.owner_flags_json or ()),
+                    aware(member.email_changed_at) if member is not None else None,
+                )
             )
             histories[row.team_member_id] = _history(db, row.team_member_id, run_id)
         return _Inputs(
@@ -380,6 +420,7 @@ def _persist_check(
     total: Decimal,
     cash_in: Decimal,
     status: str,
+    stale_approvals: frozenset[str] = frozenset(),
 ) -> None:
     with session_factory() as db:
         run = db.get(PayrollRunRow, run_id)
@@ -390,10 +431,15 @@ def _persist_check(
             if row is None:
                 continue
             decision, decision_id, flags, reason = outcome[line.line_id]
+            row.hours, row.rate, row.gross = line.hours, line.rate, line.gross
             row.decision = decision.value
             row.decision_id = decision_id
             row.flags_json = list(flags)
             row.reason = reason
+            if line.line_id in stale_approvals:
+                row.owner_action = None
+                row.owner_action_at = None
+                row.owner_flags_json = None
         run.run_decision_id = run_decision_id
         run.total = total
         run.cash_in_snapshot = cash_in
@@ -402,8 +448,20 @@ def _persist_check(
         db.commit()
 
 
+def _approval_covers(line: _LineIn, flags: tuple[str, ...]) -> bool:
+    """An APPROVED action holds only for the risk the owner saw when approving."""
+    if line.owner_action_at is None or not set(flags) <= set(line.owner_flags):
+        return False
+    return line.email_changed_at is None or line.email_changed_at <= line.owner_action_at
+
+
 async def check_run(run_id: str) -> PayrollRunOut:
     """Run all 7 checks over a run, log the decisions and set its status."""
+    async with _lock("run", run_id):
+        return await _check_run_locked(run_id)
+
+
+async def _check_run_locked(run_id: str) -> PayrollRunOut:
     inputs = await asyncio.to_thread(_gather_inputs, run_id)
     if inputs.status in FINISHED:
         return await asyncio.to_thread(get_run_out, run_id)
@@ -420,9 +478,35 @@ async def check_run(run_id: str) -> PayrollRunOut:
             draft, inputs.histories[line.member_id], inputs.code, policy, now
         )
 
+    line_results = await asyncio.gather(
+        *[
+            decide(
+                GuardAction.PAY_TEAM_MEMBER,
+                {
+                    "payroll_check": {
+                        "decision": checks[ln.line_id].decision.value,
+                        "flags": list(checks[ln.line_id].flags),
+                    },
+                    "amount": _money(ln.gross),
+                    "hours": _money(ln.hours),
+                    "member_key": ln.member_key,
+                },
+                ln.line_id,
+            )
+            for ln in inputs.lines
+        ]
+    )
+
+    stale: set[str] = set()
+    for ln in inputs.lines:
+        if ln.owner_action == "APPROVED" and not _approval_covers(ln, checks[ln.line_id].flags):
+            stale.add(ln.line_id)
+            ln.owner_action = None  # new risk since the approval: the line is open again
     excluded = {ln.member_key for ln in inputs.lines if ln.owner_action == "EXCLUDED"}
     denied = {
-        ln.member_key for ln in inputs.lines if checks[ln.line_id].decision == LeashDecision.DENY
+        ln.member_key
+        for ln, res in zip(inputs.lines, line_results, strict=True)
+        if res.decision == LeashDecision.DENY
     }
     priced = [
         replace(inputs.drafts[ln.member_id], gross=ln.gross, hours=ln.hours, rate=ln.rate)
@@ -439,24 +523,7 @@ async def check_run(run_id: str) -> PayrollRunOut:
         run_flags.add("PR-05")
     ordered_flags = sorted(run_flags)
     run_decision = LeashDecision.ASK if ordered_flags else LeashDecision.ALLOW
-
-    line_calls = [
-        decide(
-            GuardAction.PAY_TEAM_MEMBER,
-            {
-                "payroll_check": {
-                    "decision": checks[ln.line_id].decision.value,
-                    "flags": list(checks[ln.line_id].flags),
-                },
-                "amount": _money(ln.gross),
-                "hours": _money(ln.hours),
-                "member_key": ln.member_key,
-            },
-            ln.line_id,
-        )
-        for ln in inputs.lines
-    ]
-    run_call = decide(
+    run_result = await decide(
         GuardAction.SEND_PAYROLL_BATCH,
         {
             "payroll_check": {"decision": run_decision.value, "flags": ordered_flags},
@@ -466,7 +533,6 @@ async def check_run(run_id: str) -> PayrollRunOut:
         },
         run_id,
     )
-    *line_results, run_result = await asyncio.gather(*line_calls, run_call)
 
     outcome: dict[str, tuple[LeashDecision, str, tuple[str, ...], str | None]] = {}
     open_ask = False
@@ -483,8 +549,15 @@ async def check_run(run_id: str) -> PayrollRunOut:
     run_open = bool(ordered_flags) and not inputs.approved
     status = "AWAITING_APPROVAL" if open_ask or run_open else "CHECKED"
     await asyncio.to_thread(
-        _persist_check, run_id, inputs.lines, outcome, run_result.decision_id, total,
-        inputs.cash_in, status,
+        _persist_check,
+        run_id,
+        inputs.lines,
+        outcome,
+        run_result.decision_id,
+        total,
+        inputs.cash_in,
+        status,
+        frozenset(stale),
     )
     return await asyncio.to_thread(get_run_out, run_id)
 
@@ -571,6 +644,7 @@ def _stamp_owner_action(
         run, line = _validated_line(db, run_id, line_id)
         line.owner_action = owner_action
         line.owner_action_at = now
+        line.owner_flags_json = list(line.flags_json or [])
         run.approved_at = None  # any change re-opens the run flags
         db.commit()
         return line.gross
@@ -579,30 +653,31 @@ def _stamp_owner_action(
 async def set_line_action(
     run_id: str, line_id: str, owner_action: OwnerAction, note: str | None
 ) -> PayrollRunOut:
-    now = datetime.now(UTC)
-    policy = await SqlPolicyProvider(session_factory).active_policy()
-    gross = await asyncio.to_thread(_stamp_owner_action, run_id, line_id, owner_action, now)
-    approved = owner_action == "APPROVED"
-    facts: dict[str, Any] = {"owner_action": owner_action}
-    if note:
-        facts["note"] = note
-    await SqlDecisionLog(session_factory).append(
-        DecisionRecord(
-            decision_id=new_id("lsd"),
-            policy_version=policy.version,
-            action_type=GuardAction.PAY_TEAM_MEMBER,
-            subject_type="payroll_line",
-            subject_id=line_id,
-            decision=LeashDecision.ALLOW if approved else LeashDecision.DENY,
-            rule_ids=("OWNER",),
-            facts=facts,
-            amount=gross,
-            reason="Owner approved this line." if approved else "Owner excluded this line.",
-            actor="owner",
-            created_at=now,
+    async with _lock("run", run_id):
+        now = datetime.now(UTC)
+        policy = await SqlPolicyProvider(session_factory).active_policy()
+        gross = await asyncio.to_thread(_stamp_owner_action, run_id, line_id, owner_action, now)
+        approved = owner_action == "APPROVED"
+        facts: dict[str, Any] = {"owner_action": owner_action}
+        if note:
+            facts["note"] = note
+        await SqlDecisionLog(session_factory).append(
+            DecisionRecord(
+                decision_id=new_id("lsd"),
+                policy_version=policy.version,
+                action_type=GuardAction.PAY_TEAM_MEMBER,
+                subject_type="payroll_line",
+                subject_id=line_id,
+                decision=LeashDecision.ALLOW if approved else LeashDecision.DENY,
+                rule_ids=("OWNER",),
+                facts=facts,
+                amount=gross,
+                reason="Owner approved this line." if approved else "Owner excluded this line.",
+                actor="owner",
+                created_at=now,
+            )
         )
-    )
-    return await check_run(run_id)
+        return await _check_run_locked(run_id)
 
 
 def _approve_flags(run_id: str, now: datetime) -> None:
@@ -615,10 +690,15 @@ def _approve_flags(run_id: str, now: datetime) -> None:
 
 async def lines_ready_to_send(run_id: str, approve_run_flags: list[str]) -> list[PayrollLineOut]:
     """Re-check the run, then return the lines to pay or raise 409 (A.2.2)."""
+    async with _lock("run", run_id):
+        return await _lines_ready_locked(run_id, approve_run_flags)
+
+
+async def _lines_ready_locked(run_id: str, approve_run_flags: list[str]) -> list[PayrollLineOut]:
     current = await asyncio.to_thread(get_run_out, run_id)
     if current.status in FINISHED:
         raise _not_sendable()
-    out = await check_run(run_id)
+    out = await _check_run_locked(run_id)
     if out.status in FINISHED:
         raise _not_sendable()
     if out.run_decision == LeashDecision.DENY:
@@ -879,8 +959,8 @@ async def confirm_timesheet_mapping(
 
 
 def _conflict(exc: RosterConflict) -> ApiError:
+    code = "MEMBER_NAME_IN_USE" if exc.kind == "name" else "PAYOUT_EMAIL_IN_USE"
     text = str(exc)
-    code = "MEMBER_NAME_IN_USE" if "name" in text and "email" not in text else "PAYOUT_EMAIL_IN_USE"
     return ApiError(409, code, text[:1].upper() + text[1:] + ".")
 
 

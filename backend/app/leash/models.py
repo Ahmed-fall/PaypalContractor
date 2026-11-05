@@ -163,6 +163,14 @@ class PayrollRunRow(Base):
             "status IN ('PREPARED','CHECKED','AWAITING_APPROVAL','SENT','PAID','PARTIAL','FAILED')"
         ),
         CheckConstraint("milestone_id IS NOT NULL OR period IS NOT NULL"),
+        # One open (unsent) run per milestone, enforced by the database.
+        Index(
+            "one_open_run_per_milestone",
+            "milestone_id",
+            unique=True,
+            postgresql_where=text("status IN ('PREPARED','CHECKED','AWAITING_APPROVAL')"),
+            sqlite_where=text("status IN ('PREPARED','CHECKED','AWAITING_APPROVAL')"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
@@ -216,6 +224,8 @@ class PayrollLineRow(Base):
     reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
     owner_action: Mapped[str | None] = mapped_column(String(10), nullable=True)
     owner_action_at: Mapped[dt.datetime | None] = mapped_column(_TS, nullable=True)
+    # The line's flags at the moment of the owner action: an approval covers only these.
+    owner_flags_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     payout_item_id: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
     paypal_transaction_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
     payout_status: Mapped[str | None] = mapped_column(String(10), nullable=True)
