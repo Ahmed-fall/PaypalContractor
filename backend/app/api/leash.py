@@ -23,9 +23,10 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, File, Query, UploadFile
+from pydantic import BaseModel
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
@@ -42,6 +43,7 @@ from ..leash.models import (
     TeamMemberRow,
     TimesheetUploadRow,
 )
+from ..leash.guard import DEFAULT_RULE_ID, PAYROLL_CHECKS_RULE_ID
 from ..leash.payroll import runs
 from ..leash.policy import BUILTIN_RULES
 from ..leash.seed import seed_leash_demo
@@ -78,6 +80,11 @@ from .errors import ApiError
 
 logger = logging.getLogger(__name__)
 
+# Rule ids a client policy may not use: the guard's built-ins and its own result ids.
+RESERVED_RULE_IDS = frozenset(
+    {r.id for r in BUILTIN_RULES} | {DEFAULT_RULE_ID, PAYROLL_CHECKS_RULE_ID}
+)
+MAX_EMAIL_WINDOW_DAYS = 365
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 RECENT_RUNS = 20
 DRAFT_SOURCE_TEXT = "(plain form)"
@@ -134,11 +141,12 @@ async def _resume_once() -> None:
     async with _startup_lock:
         if _resumed:
             return
-        _resumed = True
         try:
             await payouts_sync.resume_pending()
         except Exception:
-            logger.exception("leash: resuming payout polling failed")
+            logger.exception("leash: resuming payout polling failed; will retry")
+        else:
+            _resumed = True
 
 
 router = APIRouter(
@@ -214,19 +222,41 @@ def policy_cards(policy: LeashPolicy) -> list[str]:
         f"Payroll: a changed payout email (last {policy.email_change_window_days} days) "
         "waits for you."
     )
-    cards.append(f"Payroll: a run above {policy.payroll_margin_limit_pct}% of the money "
-                 "received waits for you.")
+    cards.append(
+        f"Payroll: a run above {policy.payroll_margin_limit_pct}% of the money "
+        "received waits for you."
+    )
     return cards
 
 
+def _validate_client_policy(policy: LeashPolicy) -> None:
+    fields = [
+        {"field": f"rules[{i}].id", "msg": "reserved rule id"}
+        for i, rule in enumerate(policy.rules)
+        if rule.id in RESERVED_RULE_IDS
+    ]
+    if not 0 <= policy.email_change_window_days <= MAX_EMAIL_WINDOW_DAYS:
+        fields.append(
+            {
+                "field": "email_change_window_days",
+                "msg": f"must be between 0 and {MAX_EMAIL_WINDOW_DAYS}",
+            }
+        )
+    if fields:
+        raise ApiError(422, "VALIDATION_ERROR", "policy failed validation", {"fields": fields})
+
+
 def _with_builtins(policy: LeashPolicy, version: int) -> LeashPolicy:
-    present = {rule.id for rule in policy.rules}
-    rules = [*policy.rules, *(r for r in BUILTIN_RULES if r.id not in present)]
+    """The built-ins are always appended (reserved ids were rejected before this)."""
+    rules = [*policy.rules, *BUILTIN_RULES]
     return policy.model_copy(update={"version": version, "rules": rules})
 
 
 def _create_draft(db: Session, policy: LeashPolicy, source_text: str) -> PolicyCompileResponse:
-    latest = db.scalars(select(LeashPolicyRow.version).order_by(LeashPolicyRow.version.desc())).first()
+    _validate_client_policy(policy)
+    latest = db.scalars(
+        select(LeashPolicyRow.version).order_by(LeashPolicyRow.version.desc())
+    ).first()
     version = (latest or 0) + 1
     draft = _with_builtins(policy, version)
     db.add(
@@ -242,7 +272,9 @@ def _create_draft(db: Session, policy: LeashPolicy, source_text: str) -> PolicyC
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise ApiError(409, "POLICY_VERSION_CONFLICT", "Another draft was just saved. Retry.") from exc
+        raise ApiError(
+            409, "POLICY_VERSION_CONFLICT", "Another draft was just saved. Retry."
+        ) from exc
     return PolicyCompileResponse(
         draft_version=version,
         status="DRAFT",
@@ -291,15 +323,15 @@ async def compile_policy(
         result = compiler(body.text)
         if inspect.isawaitable(result):
             result = await result
-        policy = (
-            result if isinstance(result, LeashPolicy) else LeashPolicy.model_validate(result)
-        )
+        policy = result if isinstance(result, LeashPolicy) else LeashPolicy.model_validate(result)
     except Exception as exc:
         logger.warning("leash: policy compiler failed (%s)", type(exc).__name__)
         raise ApiError(
             422, "POLICY_COMPILE_FAILED", "The policy could not be compiled. Use the plain form."
         ) from exc
-    return _create_draft(db, policy, body.text)
+    # The compiler echoes the built-in G-05 (A.2.2); it is dropped here and re-added from code.
+    kept = [r for r in policy.rules if r.id not in RESERVED_RULE_IDS]
+    return _create_draft(db, policy.model_copy(update={"rules": kept}), body.text)
 
 
 def _activate(db: Session, version: int) -> PolicyActivateResponse:
@@ -308,14 +340,18 @@ def _activate(db: Session, version: int) -> PolicyActivateResponse:
         raise ApiError(409, "POLICY_DRAFT_NOT_FOUND", "That policy version was never saved.")
     if not row.active:
         # One transaction; the partial unique index allows a single active row.
-        db.execute(update(LeashPolicyRow).where(LeashPolicyRow.active.is_(True)).values(active=False))
+        db.execute(
+            update(LeashPolicyRow).where(LeashPolicyRow.active.is_(True)).values(active=False)
+        )
         row.active = True
         row.activated_at = utcnow()
         try:
             db.commit()
         except IntegrityError as exc:
             db.rollback()
-            raise ApiError(409, "POLICY_VERSION_CONFLICT", "Another policy was just activated.") from exc
+            raise ApiError(
+                409, "POLICY_VERSION_CONFLICT", "Another policy was just activated."
+            ) from exc
     return PolicyActivateResponse(
         version=row.version, active=True, activated_at=aware(row.activated_at or utcnow())
     )
@@ -429,14 +465,35 @@ async def upload_timesheet(
     return await runs.upload_timesheet(db, data, file.filename or "upload")
 
 
-@router.post(
-    "/timesheets/{upload_id}/mapping", response_model=TimesheetParsed, dependencies=_write
-)
+@router.post("/timesheets/{upload_id}/mapping", response_model=TimesheetParsed, dependencies=_write)
 async def confirm_timesheet_mapping(
     upload_id: str, body: TimesheetMappingConfirm, db: Session = Depends(get_db)
 ) -> TimesheetParsed:
     with _canonical_404():
         return await runs.confirm_timesheet_mapping(db, upload_id, dict(body.mapping))
+
+
+class TimesheetDiscarded(BaseModel):
+    upload_id: str
+    status: Literal["REJECTED"]
+
+
+@router.post(
+    "/timesheets/{upload_id}/discard", response_model=TimesheetDiscarded, dependencies=_write
+)
+def discard_timesheet(upload_id: str, db: Session = Depends(get_db)) -> TimesheetDiscarded:
+    """Drop an upload that cannot be mapped so it stops blocking run creation."""
+    upload = db.get(TimesheetUploadRow, upload_id)
+    if upload is None:
+        raise ApiError(404, "NOT_FOUND", "Timesheet upload not found.")
+    if upload.status != "MAPPING_REQUIRED":
+        raise ApiError(
+            409, "NOT_DISCARDABLE", "Only a timesheet awaiting mapping can be discarded."
+        )
+    upload.status = "REJECTED"
+    upload.table_json = None
+    db.commit()
+    return TimesheetDiscarded(upload_id=upload_id, status="REJECTED")
 
 
 # --- payroll runs ------------------------------------------------------------------------
@@ -451,8 +508,20 @@ async def create_payroll_run(
     assert body.milestone_id is not None  # PayrollRunCreate guarantees it for MILESTONE
     if db.get(Milestone, body.milestone_id) is None:
         raise ApiError(404, "NOT_FOUND", "Milestone not found.")
+    open_run = db.scalars(
+        select(PayrollRunRow.id)
+        .where(
+            PayrollRunRow.milestone_id == body.milestone_id,
+            PayrollRunRow.status.not_in(runs.FINISHED),
+        )
+        .order_by(PayrollRunRow.created_at, PayrollRunRow.id)
+    ).first()
+    if open_run is not None:  # A.2.2: an unsent run for the milestone is returned as is
+        return runs.get_run_out(open_run)
     pending = db.scalars(
-        select(TimesheetUploadRow).where(TimesheetUploadRow.status == "MAPPING_REQUIRED")
+        select(TimesheetUploadRow).where(
+            TimesheetUploadRow.status == "MAPPING_REQUIRED", TimesheetUploadRow.row_count > 0
+        )
     ).first()
     if pending is not None:
         raise ApiError(
@@ -487,9 +556,7 @@ def get_payroll_run(run_id: str) -> PayrollRunOut:
 @router.patch(
     "/payroll/runs/{run_id}/lines/{line_id}", response_model=PayrollRunOut, dependencies=_write
 )
-async def update_payroll_line(
-    run_id: str, line_id: str, body: PayrollLineUpdate
-) -> PayrollRunOut:
+async def update_payroll_line(run_id: str, line_id: str, body: PayrollLineUpdate) -> PayrollRunOut:
     with _canonical_404():
         return await runs.set_line_action(run_id, line_id, body.owner_action, body.note)
 

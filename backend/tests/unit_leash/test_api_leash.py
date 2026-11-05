@@ -634,3 +634,133 @@ def test_unknown_ids_404(ctx: Ctx) -> None:
     for r in cases:
         assert r.status_code == 404, r.text
         assert r.json()["error"]["code"] == "NOT_FOUND"
+
+
+# --- fix round 1 ----------------------------------------------------------------------------
+
+
+def _upload_unmappable(c: Ctx) -> str:
+    r = c.post("/timesheets", files={"file": ("j.csv", b"just one header\nx\ny\n", "text/csv")})
+    assert r.status_code == 201, r.text
+    assert r.json()["status"] == "MAPPING_REQUIRED"
+    return str(r.json()["upload_id"])
+
+
+def test_unmappable_upload_blocks_until_discarded(ctx: Ctx) -> None:
+    upload_id = _upload_unmappable(ctx)
+    body = {"mode": "MILESTONE", "milestone_id": "ms_01"}
+    assert ctx.post("/payroll/runs", json=body).json()["error"]["code"] == "MAPPING_REQUIRED"
+    assert ctx.post(f"/timesheets/{upload_id}/discard", auth=False).status_code == 401
+    done = ctx.post(f"/timesheets/{upload_id}/discard")
+    assert done.status_code == 200, done.text
+    assert done.json() == {"upload_id": upload_id, "status": "REJECTED"}
+    again = ctx.post(f"/timesheets/{upload_id}/discard")
+    assert again.status_code == 409
+    assert again.json()["error"]["code"] == "NOT_DISCARDABLE"
+    assert ctx.post("/payroll/runs", json=body).status_code == 200
+
+
+def test_discard_parsed_or_unknown_upload(ctx: Ctx) -> None:
+    with ctx.sf() as db:
+        parsed = db.scalars(select(lm.TimesheetUploadRow)).first()
+        assert parsed is not None
+        parsed_id = parsed.id
+    r = ctx.post(f"/timesheets/{parsed_id}/discard")
+    assert r.status_code == 409 and r.json()["error"]["code"] == "NOT_DISCARDABLE"
+    missing = ctx.post("/timesheets/tsu_missing/discard")
+    assert missing.status_code == 404 and missing.json()["error"]["code"] == "NOT_FOUND"
+
+
+def test_existing_open_run_returned_despite_pending_upload(ctx: Ctx) -> None:
+    run = _create_run(ctx)
+    _upload_unmappable(ctx)
+    r = ctx.post("/payroll/runs", json={"mode": "MILESTONE", "milestone_id": "ms_01"})
+    assert r.status_code == 200, r.text
+    assert r.json()["run_id"] == run["run_id"]
+
+
+def test_zero_row_upload_does_not_block(ctx: Ctx) -> None:
+    r = ctx.post("/timesheets", files={"file": ("h.csv", b"just one header\n", "text/csv")})
+    assert r.status_code == 201 and r.json()["status"] == "MAPPING_REQUIRED"
+    assert r.json()["row_count"] == 0
+    run = ctx.post("/payroll/runs", json={"mode": "MILESTONE", "milestone_id": "ms_01"})
+    assert run.status_code == 200, run.text
+
+
+def _policy_body(**over: Any) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "version": 1,
+        "payroll_margin_limit_pct": "80",
+        "email_change_window_days": 7,
+        "rules": [
+            {
+                "id": "G-01",
+                "applies_to": "SEND_REMEDIATION_INVOICE",
+                "when": {"amount_lte": "100.00"},
+                "outcome": "ALLOW",
+                "source_text": "small",
+            }
+        ],
+    }
+    body.update(over)
+    return body
+
+
+@pytest.mark.parametrize("reserved", ["G-05", "DEFAULT", "PAYROLL-CHECKS"])
+def test_reserved_rule_ids_rejected(ctx: Ctx, reserved: str) -> None:
+    fake = {
+        "id": reserved,
+        "applies_to": "SEND_REMEDIATION_INVOICE",
+        "when": {"amount_lte": "1000.00"},
+        "outcome": "ALLOW",
+        "source_text": "sneaky",
+    }
+    body = _policy_body()
+    body["rules"].append(fake)
+    r = ctx.post("/policy", json=body)
+    assert r.status_code == 422, r.text
+    err = r.json()["error"]
+    assert err["code"] == "VALIDATION_ERROR"
+    assert err["details"]["fields"] == [{"field": "rules[1].id", "msg": "reserved rule id"}]
+    with ctx.sf() as db:
+        assert len(db.scalars(select(lm.LeashPolicyRow)).all()) <= 1  # nothing was saved
+
+
+def test_valid_policy_stores_real_g05_and_card(ctx: Ctx) -> None:
+    r = ctx.post("/policy", json=_policy_body())
+    assert r.status_code == 200, r.text
+    body = r.json()
+    g05 = [rule for rule in body["policy"]["rules"] if rule["id"] == "G-05"]
+    assert len(g05) == 1
+    assert g05[0]["outcome"] == "DENY" and g05[0]["source_text"] == "(built in)"
+    assert any("(G-05)" in c and "do not add up" in c for c in body["cards"])
+    with ctx.sf() as db:
+        row = db.scalars(select(lm.LeashPolicyRow).where(lm.LeashPolicyRow.version == 2)).one()
+        stored = [x for x in row.compiled_json["rules"] if x["id"] == "G-05"]
+        assert len(stored) == 1 and stored[0]["outcome"] == "DENY"
+
+
+@pytest.mark.parametrize("days", [1_000_000_000, 366])
+def test_email_window_bounded(ctx: Ctx, days: int) -> None:
+    r = ctx.post("/policy", json=_policy_body(email_change_window_days=days))
+    assert r.status_code == 422
+    assert r.json()["error"]["code"] == "VALIDATION_ERROR"
+    ok = ctx.post("/policy", json=_policy_body(email_change_window_days=365))
+    assert ok.status_code == 200
+
+
+def test_failed_resume_is_retried(ctx: Ctx, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[int] = []
+
+    async def flaky() -> int:
+        calls.append(1)
+        if len(calls) == 1:
+            msg = "boom"
+            raise RuntimeError(msg)
+        return 0
+
+    monkeypatch.setattr(payouts_sync, "resume_pending", flaky)
+    assert ctx.get("/team").status_code == 200
+    assert ctx.get("/team").status_code == 200
+    assert ctx.get("/team").status_code == 200
+    assert len(calls) == 2
