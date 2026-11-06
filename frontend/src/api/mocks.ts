@@ -21,7 +21,13 @@ import type {
   LedgerRow,
   MarginResponse,
   MarginRow,
+  PayrollLineUpdate,
+  PayrollRunOut,
+  PayrollSendResponse,
   PersistedContractExtraction,
+  TeamMemberOut,
+  PolicyCompileResponse,
+  LeashPolicy,
   RemediationInvoiceRecord,
   RemediationRequest,
   RemediationResponse,
@@ -126,6 +132,11 @@ export function setMockLatency(ms: number): void {
 /** Restore the seeded demo state (also what POST /demo/reset does). */
 export function resetMockState(): void {
   state = seed();
+  payrollMock = { run: null, sentGets: 0, sendKey: null };
+  pendingUploadId = null;
+  uploadKeys.clear();
+  teamMock = null;
+  policyMock = { active: null, latest: 0, drafts: {} };
   try {
     sessionStorage.removeItem(PERSIST_KEY);
   } catch {
@@ -649,6 +660,267 @@ function leashFixture(name: string, status = 200): TransportResponse {
   return body === null ? fail(404, "NOT_FOUND", `Fixture ${name} is not available.`) : ok(body, status);
 }
 
+/** The roster is stateful for the session too; cleared by resetMockState(). */
+let teamMock: TeamMemberOut[] | null = null;
+
+function roster(): TeamMemberOut[] {
+  if (!teamMock) {
+    const omar = pick<TeamMemberOut>(leashFixtures, "team_member_omar.json");
+    // The demo run pays Sara and Youssef too (payroll_run_awaiting_approval.json), so they are on the roster.
+    const run = pick<PayrollRunOut>(leashFixtures, "payroll_run_awaiting_approval.json");
+    const others: TeamMemberOut[] = (run?.lines ?? [])
+      .filter((l) => l.member_name !== "Omar")
+      .map((l, i) => ({
+        member_id: `tm_0${i + 2}`,
+        name: l.member_name,
+        payout_email: l.payout_email,
+        hourly_rate: l.rate,
+        email_changed_at: null,
+        first_paid_at: "2026-09-30T12:00:00Z",
+        active: true,
+      }));
+    teamMock = omar ? [omar, ...others] : others;
+  }
+  return teamMock;
+}
+
+function patchMember(req: TransportRequest, id: string): TransportResponse {
+  const member = roster().find((m) => m.member_id === id);
+  if (!member) return fail(404, "NOT_FOUND", `Team member ${id} was not found.`);
+  const body = { ...((req.body ?? {}) as Partial<TeamMemberOut>) };
+  if (body.payout_email) body.payout_email = body.payout_email.trim().toLowerCase();
+  if (body.payout_email && body.payout_email.toLowerCase() !== member.payout_email.toLowerCase()) {
+    member.email_changed_at = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  }
+  Object.assign(member, body);
+  return ok(member);
+}
+
+/**
+ * The payroll run is stateful for the session so the demo can be clicked through:
+ * GET -> exclude Omar -> send (202) -> two GETs say SENT -> the next says PAID.
+ * Kept out of the persisted state on purpose; resetMockState() clears it.
+ * `sendKey` is the idempotency_key of the send that went out, like `payroll_runs.idempotency_key`. */
+let payrollMock: { run: PayrollRunOut | null; sentGets: number; sendKey: string | null } = { run: null, sentGets: 0, sendKey: null };
+/** Like the real backend: an upload waiting for its column mapping blocks run creation (409 MAPPING_REQUIRED). */
+let pendingUploadId: string | null = null;
+
+/** Uploads the mock has seen: file key (name + size) -> upload id. A discarded upload frees its key. */
+const uploadKeys = new Map<string, string>();
+
+function createRunMock(r: TransportRequest): TransportResponse {
+  const milestoneId = (r.body as { milestone_id?: string | null } | null)?.milestone_id ?? null;
+  if (!state.rows.some((row) => row.milestone_id === milestoneId)) return fail(404, "NOT_FOUND", "Milestone not found.");
+  // Real backend order: an unsent run for the milestone is returned as is, before the pending-upload check.
+  const open = payrollMock.run ?? currentRun();
+  if (open && open.milestone_id === milestoneId && !["SENT", "PAID", "PARTIAL", "FAILED"].includes(open.status)) {
+    return ok(open, 200);
+  }
+  if (pendingUploadId) {
+    return fail(409, "MAPPING_REQUIRED", "A timesheet still needs its column mapping.", { upload_id: pendingUploadId });
+  }
+  return fail(404, "NOT_FOUND", "No timesheet hours for this milestone.");
+}
+
+function uploadMock(r: TransportRequest): TransportResponse {
+  const file = r.form?.get("file");
+  const key = file instanceof File ? `${file.name}:${file.size}` : null;
+  const existing = key ? uploadKeys.get(key) : undefined;
+  if (existing) return fail(409, "DUPLICATE_UPLOAD", "This timesheet was already uploaded.", { upload_id: existing });
+  const res = leashFixture("timesheet_mapping_required.json", 201);
+  const id = (res.body as { upload_id?: string } | null)?.upload_id ?? null;
+  pendingUploadId = id;
+  if (key && id) uploadKeys.set(key, id);
+  return res;
+}
+
+function isKnownUpload(id: string): boolean {
+  return [...uploadKeys.values()].includes(id);
+}
+
+function freeUploadKey(id: string): void {
+  for (const [k, v] of uploadKeys) if (v === id) uploadKeys.delete(k);
+}
+
+function currentRun(): PayrollRunOut | null {
+  if (!payrollMock.run) payrollMock.run = pick<PayrollRunOut>(leashFixtures, "payroll_run_awaiting_approval.json");
+  return payrollMock.run;
+}
+
+function runNotFound(runId: string): TransportResponse {
+  return fail(404, "NOT_FOUND", `Payroll run ${runId} was not found.`);
+}
+
+function getRun(runId: string): TransportResponse {
+  const run = currentRun();
+  if (!run) return fail(404, "NOT_FOUND", "Fixture payroll_run_awaiting_approval.json is not available.");
+  if (run.run_id !== runId) return runNotFound(runId);
+  if (run.status === "SENT") {
+    if (payrollMock.sentGets < 2) {
+      payrollMock.sentGets += 1;
+    } else {
+      run.status = "PAID";
+      for (const l of run.lines) if (l.payout_status === "PENDING") l.payout_status = "SUCCESS";
+    }
+  }
+  return ok(run);
+}
+
+function patchRunLine(req: TransportRequest, runId: string, lineId: string): TransportResponse {
+  const run = currentRun();
+  if (run && run.run_id !== runId) return runNotFound(runId);
+  const action = (req.body as Partial<PayrollLineUpdate> | undefined)?.owner_action;
+  if (!run) return fail(404, "NOT_FOUND", "No payroll run is available.");
+  if (action !== "APPROVED" && action !== "EXCLUDED") {
+    return fail(422, "VALIDATION_ERROR", "owner_action must be APPROVED or EXCLUDED.", { fields: { owner_action: "invalid" } });
+  }
+  if (run.status === "SENT" || run.status === "PAID" || run.status === "PARTIAL" || run.status === "FAILED") {
+    return fail(409, "RUN_NOT_SENDABLE", "This run was already sent and can't be changed.");
+  }
+  const line = run.lines.find((l) => l.line_id === lineId);
+  if (!line) return fail(404, "NOT_FOUND", `Line ${lineId} was not found.`);
+  if (line.decision === "DENY" || line.flags.includes("DEFAULT")) {
+    if (action === "APPROVED") return fail(409, "LINE_NOT_CHECKED", "Leash couldn't check this line yet.");
+  }
+  // `prl_0001` is specific to the fixture pair: Omar's line in the awaiting and after_exclude runs.
+  if (action === "EXCLUDED" && lineId === "prl_0001") {
+    // The fixture pair: excluding Omar drops PR-06 and the total to $420.00.
+    const after = pick<PayrollRunOut>(leashFixtures, "payroll_run_after_exclude.json");
+    if (after) payrollMock.run = after;
+  } else if (action === "APPROVED" && lineId === "prl_0001" && line.owner_action === "EXCLUDED") {
+    // And back: approving Omar again re-checks the run to $720.00 with PR-06 open.
+    const back = pick<PayrollRunOut>(leashFixtures, "payroll_run_awaiting_approval.json");
+    if (back) {
+      const omar = back.lines.find((l) => l.line_id === "prl_0001");
+      if (omar) omar.owner_action = "APPROVED";
+      payrollMock.run = back;
+    }
+  } else {
+    line.owner_action = action;
+  }
+  addDecision({
+    action_type: "PAY_TEAM_MEMBER",
+    subject_type: "payroll_line",
+    subject_id: lineId,
+    decision: action === "APPROVED" ? "ALLOW" : "DENY",
+    rule_ids: ["OWNER"],
+    amount: line.gross,
+    reason: action === "APPROVED" ? `Owner approved ${line.member_name}'s line.` : `Owner excluded ${line.member_name}'s line.`,
+    actor: "owner",
+  });
+  return ok(payrollMock.run);
+}
+
+function sendRun(req: TransportRequest, runId: string): TransportResponse {
+  const run = currentRun();
+  if (run && run.run_id !== runId) return runNotFound(runId);
+  // Like `lines_ready_to_send`: run flags the owner ticked (approve_run_flags) are no longer open.
+  const approved = (req.body as { approve_run_flags?: unknown } | null)?.approve_run_flags;
+  const ticked = Array.isArray(approved) ? approved.filter((f): f is string => typeof f === "string") : [];
+  const sent = pick<PayrollSendResponse>(leashFixtures, "payroll_send_response.json");
+  if (!run || !sent) return fail(404, "NOT_FOUND", "Fixture payroll_send_response.json is not available.");
+  const key = (req.body as { idempotency_key?: unknown } | null)?.idempotency_key;
+  if (run.status === "SENT" || run.status === "PAID" || run.status === "PARTIAL" || run.status === "FAILED") {
+    // Like `payouts._existing`: only a replay with the same key gets the stored batch.
+    if (key === payrollMock.sendKey) return ok(sent, 202);
+    return fail(409, "RUN_NOT_SENDABLE", "This payroll run was already sent to PayPal. Reconcile it before trying again.");
+  }
+  // Like `?expected_total=`: the run would pay a different total than the owner confirmed.
+  const expected = req.query.expected_total;
+  if (expected !== undefined && expected !== run.total) {
+    return fail(409, "RUN_NOT_SENDABLE", "The payroll run changed. Refresh it and try again.");
+  }
+  const openLines = run.lines
+    .filter((l) => l.decision === "ASK" && l.owner_action === null)
+    .map((l) => ({ line_id: l.line_id, flags: l.flags }));
+  // Like `lines_ready_locked`: every run flag the owner didn't tick is open, whatever the run decision.
+  const openFlags = run.run_flags.filter((f) => !ticked.includes(f));
+  if (openLines.length > 0 || openFlags.length > 0) {
+    return fail(409, "LEASH_ASK_UNRESOLVED", "Some checks still need your decision.", {
+      open_asks: openLines,
+      open_run_flags: openFlags,
+    });
+  }
+  run.status = "SENT";
+  run.sender_batch_id = sent.sender_batch_id;
+  for (const l of run.lines) {
+    if (l.owner_action !== "EXCLUDED") l.payout_status = "PENDING";
+  }
+  payrollMock.sentGets = 0;
+  payrollMock.sendKey = typeof key === "string" ? key : null;
+  return ok(sent, 202);
+}
+
+/**
+ * The policy is stateful like the real server: a draft gets `max(version) + 1` (the body's version is
+ * ignored), activation makes it the active one, and GET returns the active one.
+ * Cleared by resetMockState().
+ */
+let policyMock: { active: Record<string, unknown> | null; latest: number; drafts: Record<number, LeashPolicy> } = {
+  active: null,
+  latest: 0,
+  drafts: {},
+};
+
+function activePolicyMock(): Record<string, unknown> | null {
+  if (!policyMock.active) {
+    const fixture = pick<Record<string, unknown>>(leashFixtures, "active_policy.json");
+    if (!fixture) return null;
+    policyMock.active = fixture;
+    policyMock.latest = Math.max(policyMock.latest, Number(fixture.version));
+  }
+  return policyMock.active;
+}
+
+function storeDraft(policy: LeashPolicy, cards: string[], testCases: string[]): TransportResponse {
+  activePolicyMock();
+  const version = policyMock.latest + 1;
+  policyMock.latest = version;
+  const hasG05 = policy.rules.some((r) => r.id === "G-05");
+  const stored: LeashPolicy = {
+    ...policy,
+    version,
+    rules: hasG05
+      ? policy.rules
+      : [
+          ...policy.rules,
+          {
+            id: "G-05",
+            applies_to: "SEND_REMEDIATION_INVOICE",
+            when: { line_items_sum_mismatch: true },
+            outcome: "DENY",
+            source_text: "(built in)",
+          },
+        ],
+  };
+  policyMock.drafts[version] = stored;
+  const res: PolicyCompileResponse = { draft_version: version, status: "DRAFT", policy: stored, cards, test_cases: testCases };
+  return ok(res);
+}
+
+function echoPolicyDraft(req: TransportRequest): TransportResponse {
+  const policy = req.body as LeashPolicy | undefined;
+  if (!policy || !Array.isArray(policy.rules)) {
+    return fail(422, "VALIDATION_ERROR", "Send a policy with a rules list.", { fields: { rules: "required" } });
+  }
+  return storeDraft(policy, ["Draft saved"], []);
+}
+
+function compilePolicyMock(): TransportResponse {
+  const fixture = pick<PolicyCompileResponse>(leashFixtures, "policy_compile_response.json");
+  if (!fixture) return fail(404, "NOT_FOUND", "Fixture policy_compile_response.json is not available.");
+  return storeDraft(fixture.policy, fixture.cards, fixture.test_cases);
+}
+
+function activatePolicyMock(req: TransportRequest): TransportResponse {
+  const version = (req.body as { version?: number } | undefined)?.version ?? 0;
+  const draft = policyMock.drafts[version];
+  if (!draft) return fail(409, "POLICY_DRAFT_NOT_FOUND", "That policy version was never saved.");
+  const activated_at = new Date().toISOString();
+  policyMock.active = { ...draft, activated_at };
+  return ok({ version, active: true, activated_at });
+}
+
 // ------------------------------------------------------------------ router
 
 type Handler = (req: TransportRequest, params: string[]) => TransportResponse;
@@ -663,26 +935,51 @@ const routes: Array<[string, RegExp, Handler]> = [
   ["POST", /^\/discrepancies\/([^/]+)\/remediate$/, (r, [id]) => remediate(decodeURIComponent(id), r)],
   ["GET", /^\/leash\/ledger\/margin$/, () => margin()],
   ["GET", /^\/leash\/decisions$/, (r) => decisions(r)],
-  ["GET", /^\/leash\/policy$/, () => leashFixture("active_policy.json")],
-  ["POST", /^\/leash\/policy\/compile$/, () => leashFixture("policy_compile_response.json")],
-  ["POST", /^\/leash\/policy\/activate$/, (r) =>
-    ok({ version: (r.body as { version?: number })?.version ?? 1, active: true, activated_at: new Date().toISOString() })],
-  ["GET", /^\/leash\/team$/, () => {
-    const omar = pick<unknown>(leashFixtures, "team_member_omar.json");
-    return ok(omar ? [omar] : []);
+  ["GET", /^\/leash\/policy$/, () => { const a = activePolicyMock(); return a ? ok(a) : fail(404, "NOT_FOUND", "No active policy."); }],
+  ["POST", /^\/leash\/policy$/, (r) => echoPolicyDraft(r)],
+  ["POST", /^\/leash\/policy\/compile$/, () => compilePolicyMock()],
+  ["POST", /^\/leash\/policy\/activate$/, (r) => activatePolicyMock(r)],
+  ["GET", /^\/leash\/team$/, () => ok(roster())],
+  ["POST", /^\/leash\/team$/, (r) => {
+    const body = r.body as Partial<TeamMemberOut>;
+    const m = {
+      member_id: nextId("tm_"),
+      email_changed_at: null,
+      first_paid_at: null,
+      active: true,
+      ...body,
+      payout_email: (body.payout_email ?? "").trim().toLowerCase(),
+    } as TeamMemberOut;
+    roster().push(m);
+    return ok(m, 201);
   }],
-  ["POST", /^\/leash\/team$/, (r) =>
-    ok({ member_id: nextId("tm_"), email_changed_at: null, first_paid_at: null, active: true, ...(r.body as object) }, 201)],
-  ["PATCH", /^\/leash\/team\/([^/]+)$/, (r, [id]) => {
-    const omar = pick<Record<string, unknown>>(leashFixtures, "team_member_omar.json") ?? {};
-    return ok({ ...omar, member_id: decodeURIComponent(id), ...(r.body as object) });
+  ["PATCH", /^\/leash\/team\/([^/]+)$/, (r, [id]) => patchMember(r, decodeURIComponent(id))],
+  ["POST", /^\/leash\/timesheets$/, (r) => uploadMock(r)],
+  ["POST", /^\/leash\/timesheets\/([^/]+)\/mapping$/, (_r, [id]) => {
+    const upload = decodeURIComponent(id);
+    if (isKnownUpload(upload) && upload !== pendingUploadId) {
+      return fail(409, "UPLOAD_NOT_PENDING", "This timesheet does not need a column mapping.");
+    }
+    pendingUploadId = null;
+    return leashFixture("timesheet_parsed.json");
   }],
-  ["POST", /^\/leash\/timesheets$/, () => leashFixture("timesheet_mapping_required.json", 201)],
-  ["POST", /^\/leash\/timesheets\/([^/]+)\/mapping$/, () => leashFixture("timesheet_parsed.json")],
-  ["POST", /^\/leash\/payroll\/runs$/, () => leashFixture("payroll_run_awaiting_approval.json", 201)],
-  ["GET", /^\/leash\/payroll\/runs\/([^/]+)$/, () => leashFixture("payroll_run_awaiting_approval.json")],
-  ["PATCH", /^\/leash\/payroll\/runs\/([^/]+)\/lines\/([^/]+)$/, () => leashFixture("payroll_run_after_exclude.json")],
-  ["POST", /^\/leash\/payroll\/runs\/([^/]+)\/send$/, () => leashFixture("payroll_send_response.json", 202)],
+  ["POST", /^\/leash\/timesheets\/([^/]+)\/discard$/, (_r, [id]) => {
+    const upload = decodeURIComponent(id);
+    if (isKnownUpload(upload) && upload !== pendingUploadId) {
+      return fail(409, "NOT_DISCARDABLE", "Only a timesheet awaiting mapping can be discarded.");
+    }
+    pendingUploadId = null;
+    freeUploadKey(upload);
+    return ok({ upload_id: upload, status: "REJECTED" });
+  }],
+  ["GET", /^\/leash\/payroll\/runs$/, () => {
+    const run = currentRun();
+    return ok(run ? [run] : []);
+  }],
+  ["POST", /^\/leash\/payroll\/runs$/, (r) => createRunMock(r)],
+  ["GET", /^\/leash\/payroll\/runs\/([^/]+)$/, (_r, [id]) => getRun(decodeURIComponent(id))],
+  ["PATCH", /^\/leash\/payroll\/runs\/([^/]+)\/lines\/([^/]+)$/, (r, [id, lineId]) => patchRunLine(r, decodeURIComponent(id), decodeURIComponent(lineId))],
+  ["POST", /^\/leash\/payroll\/runs\/([^/]+)\/send$/, (r, [id]) => sendRun(r, decodeURIComponent(id))],
   ["POST", /^\/demo\/reset$/, () => {
     resetMockState();
     return ok({ status: "reset" });

@@ -115,3 +115,17 @@ body {
 .fd-grid .fd-detail-row {
   background: #f6f8f7;
 }
+
+/* Wrapped cells read like normal text, not like one 37px-tall line each. */
+.fd-grid .ag-cell-auto-height,
+.fd-grid .ag-cell-wrap-text {
+  line-height: 1.4;
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+/* Chips and badges line up with the text in the same row. */
+.fd-grid .ag-cell {
+  display: flex;
+  align-items: center;
+}
