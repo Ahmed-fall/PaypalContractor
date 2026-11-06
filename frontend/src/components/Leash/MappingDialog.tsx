@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { Button } from "../common/Button";
 import { Modal } from "../common/Modal";
 import type { ColumnMappingProposal, TimesheetField } from "../../types/contracts";
-import { mappingProblem, TARGETS } from "./mapping";
+import { headerCollision, mappingProblem, TARGETS } from "./mapping";
 
 const select =
   "h-10 w-full rounded border border-paper-line bg-white px-2 text-[14px] outline-none focus:border-ink";
@@ -25,8 +25,10 @@ export default function MappingDialog({ open, headers, proposal, rowCount, busy,
   const [choice, setChoice] = useState<Record<string, TimesheetField | "">>(() =>
     Object.fromEntries(headers.map((h) => [h, proposal.mapping[h] ?? ""])),
   );
-  const [touched, setTouched] = useState(false);
+  // A duplicate target in the proposal itself is shown at once; "missing" waits until the owner tries to confirm.
+  const [touched, setTouched] = useState(() => mappingProblem(choice)?.startsWith("Only one") ?? false);
   const problem = useMemo(() => mappingProblem(choice), [choice]);
+  const collision = useMemo(() => headerCollision(headers), [headers]);
 
   const pick = (header: string, value: string) => {
     setChoice((c) => ({ ...c, [header]: value as TimesheetField | "" }));
@@ -34,7 +36,7 @@ export default function MappingDialog({ open, headers, proposal, rowCount, busy,
 
   const confirm = () => {
     setTouched(true);
-    if (problem) return;
+    if (problem || collision) return;
     const mapping: Record<string, TimesheetField> = {};
     for (const [header, field] of Object.entries(choice)) if (field) mapping[header] = field;
     onConfirm(mapping);
@@ -52,7 +54,7 @@ export default function MappingDialog({ open, headers, proposal, rowCount, busy,
           <Button variant="ghost" onClick={onDiscard} disabled={busy}>
             Discard upload
           </Button>
-          <Button onClick={confirm} disabled={busy || (touched && problem !== null)}>
+          <Button onClick={confirm} disabled={busy || collision !== null || (touched && problem !== null)}>
             Confirm mapping
           </Button>
         </>
@@ -74,7 +76,7 @@ export default function MappingDialog({ open, headers, proposal, rowCount, busy,
                 <option value="">(ignore)</option>
                 {TARGETS.map((t) => (
                   <option key={t.value} value={t.value}>
-                    {t.value}
+                    {t.label}
                   </option>
                 ))}
               </select>
@@ -82,6 +84,11 @@ export default function MappingDialog({ open, headers, proposal, rowCount, busy,
           );
         })}
         <p className="text-[12px] text-ink-muted">Required: member, work_date, hours, milestone_code. Rate is optional.</p>
+        {collision && (
+          <p id="map-collision" role="alert" className="text-[13px] text-bad">
+            {collision}
+          </p>
+        )}
         {touched && problem && (
           <p id="map-problem" role="alert" className="text-[13px] text-bad">
             {problem}

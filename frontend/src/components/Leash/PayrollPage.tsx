@@ -43,6 +43,23 @@ function uploadProblem(e: unknown): UploadProblem {
   return { message: e.message, rows };
 }
 
+/** An earlier upload the server says is in the way, and where the owner saw that. */
+interface StaleUpload {
+  id: string;
+  where: "upload" | "prepare";
+}
+
+function uploadIdOf(e: unknown): string | null {
+  if (!isApiError(e)) return null;
+  const id = (e.details as { upload_id?: unknown } | null)?.upload_id;
+  return typeof id === "string" && id ? id : null;
+}
+
+/** The upload is gone or no longer waiting for a mapping: nothing to confirm or discard any more. */
+function uploadGone(e: unknown): boolean {
+  return isApiError(e) && (e.status === 404 || e.code === "UPLOAD_NOT_PENDING" || e.code === "NOT_DISCARDABLE");
+}
+
 function runTone(status: PayrollRunStatus): "good" | "warn" | "bad" | "neutral" {
   if (status === "PAID") return "good";
   if (status === "FAILED") return "bad";
@@ -81,7 +98,10 @@ export default function PayrollPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [mapBusy, setMapBusy] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
-  const [discarded, setDiscarded] = useState(false);
+  const [discarded, setDiscarded] = useState<string | null>(null);
+  const [stale, setStale] = useState<StaleUpload | null>(null);
+  const confirming = useRef(false);
+  const preparingRef = useRef(false);
 
   const [milestones, setMilestones] = useState<LedgerRow[]>([]);
   const [milestonesFailed, setMilestonesFailed] = useState(false);
@@ -113,7 +133,8 @@ export default function PayrollPage() {
     setPending(null);
     setDialogOpen(false);
     setMapError(null);
-    setDiscarded(false);
+    setDiscarded(null);
+    setStale(null);
     setPrepareError(null);
   };
 
@@ -136,6 +157,8 @@ export default function PayrollPage() {
       }
     } catch (err) {
       setProblem(uploadProblem(err));
+      const id = isApiError(err) && err.code === "DUPLICATE_UPLOAD" ? uploadIdOf(err) : null;
+      if (id) setStale({ id, where: "upload" });
     } finally {
       setUploading(false);
       if (fileRef.current) fileRef.current.value = ""; // so the same file can be picked again
@@ -143,7 +166,8 @@ export default function PayrollPage() {
   };
 
   const confirmMapping = async (mapping: Record<string, TimesheetField>) => {
-    if (!pending) return;
+    if (!pending || confirming.current) return;
+    confirming.current = true;
     setMapBusy(true);
     setMapError(null);
     try {
@@ -152,9 +176,16 @@ export default function PayrollPage() {
       setPending(null);
       setDialogOpen(false);
     } catch (err) {
+      if (uploadGone(err)) {
+        setPending(null);
+        setDialogOpen(false);
+        setProblem({ message: "That timesheet is no longer waiting for a column mapping. Upload it again.", rows: [] });
+        return;
+      }
       const p = uploadProblem(err);
       setMapError(p.rows.length ? `${p.message} ${p.rows.map((r) => `Row ${r.row}: ${r.error}.`).join(" ")}` : p.message);
     } finally {
+      confirming.current = false;
       setMapBusy(false);
     }
   };
@@ -167,8 +198,14 @@ export default function PayrollPage() {
       await discardTimesheet(pending.upload_id);
       setPending(null);
       setDialogOpen(false);
-      setDiscarded(true);
+      setDiscarded("Upload discarded. Choose another file.");
     } catch (err) {
+      if (uploadGone(err)) {
+        setPending(null);
+        setDialogOpen(false);
+        setProblem({ message: "That timesheet is no longer waiting for a column mapping. Upload it again.", rows: [] });
+        return;
+      }
       setMapError(uploadProblem(err).message);
     } finally {
       setMapBusy(false);
@@ -176,17 +213,40 @@ export default function PayrollPage() {
   };
 
   const prepare = async () => {
-    if (!milestoneId || preparing) return;
+    if (!milestoneId || preparingRef.current) return;
+    preparingRef.current = true;
     setPreparing(true);
     setPrepareError(null);
     try {
       const run = await createPayrollRunQuiet({ mode: "MILESTONE", milestone_id: milestoneId });
       navigate(`/leash/payroll/${encodeURIComponent(run.run_id)}`);
     } catch (err) {
-      if (isApiError(err) && err.code === "MAPPING_REQUIRED") setPrepareError("Finish or discard the pending timesheet first.");
-      else if (isApiError(err) && err.status === 404) setPrepareError("No timesheet hours for this milestone yet.");
+      if (isApiError(err) && err.code === "MAPPING_REQUIRED") {
+        setPrepareError("Finish or discard the pending timesheet first.");
+        const id = uploadIdOf(err);
+        if (id) setStale({ id, where: "prepare" });
+      } else if (isApiError(err) && err.status === 404) setPrepareError("No timesheet hours for this milestone yet.");
       else setPrepareError(isApiError(err) ? err.message : SOMETHING_WRONG);
+      preparingRef.current = false;
       setPreparing(false);
+    }
+  };
+
+  /** Throw away the earlier upload the server named, then let the owner try again. */
+  const discardStale = async () => {
+    if (!stale) return;
+    const { id, where } = stale;
+    try {
+      await discardTimesheet(id);
+      setStale(null);
+      setProblem(null);
+      setPrepareError(null);
+      setDiscarded(where === "upload" ? "Upload discarded. Choose another file." : "Upload discarded. You can prepare payroll again.");
+    } catch (err) {
+      setStale(null);
+      const msg = uploadGone(err) ? "That timesheet is already in use." : uploadProblem(err).message;
+      if (where === "upload") setProblem({ message: msg, rows: [] });
+      else setPrepareError(msg);
     }
   };
 
@@ -224,6 +284,7 @@ export default function PayrollPage() {
         headerClass: "ag-right-aligned-header",
         cellClass: "num",
         valueGetter: (p) => (p.data ? `${p.data.cash_used_pct}%` : ""),
+        comparator: (_a, _b, na, nb) => toCents(na.data?.cash_used_pct) - toCents(nb.data?.cash_used_pct),
       },
       {
         colId: "batch",
@@ -275,13 +336,19 @@ export default function PayrollPage() {
             accept=".csv,.xlsx"
             className={fileInput}
             onChange={(e) => void onFile(e)}
-            disabled={uploading}
-            aria-describedby={problem ? "timesheet-hint timesheet-problem" : "timesheet-hint"}
+            disabled={uploading || pending !== null}
+            aria-describedby={`timesheet-hint${pending ? " timesheet-pending" : ""}${problem ? " timesheet-problem" : ""}`}
             aria-invalid={problem ? true : undefined}
           />
           <p id="timesheet-hint" className="mt-1 text-[12px] text-ink-muted">
             CSV or XLSX, up to 2 MB and 500 rows.
           </p>
+
+          {pending && (
+            <p id="timesheet-pending" className="mt-1 text-[12px] text-ink-muted">
+              Match or discard the pending timesheet first.
+            </p>
+          )}
 
           {uploading && <p className="mt-3 text-[14px] text-ink-soft">Reading the timesheet...</p>}
 
@@ -296,6 +363,11 @@ export default function PayrollPage() {
                     </li>
                   ))}
                 </ul>
+              )}
+              {stale?.where === "upload" && (
+                <Button size="sm" variant="secondary" className="mt-2" onClick={() => void discardStale()}>
+                  Discard that upload
+                </Button>
               )}
             </div>
           )}
@@ -326,7 +398,7 @@ export default function PayrollPage() {
           )}
           {discarded && (
             <p role="status" className="mt-4 text-[14px] text-ink-soft">
-              Upload discarded. Choose another file.
+              {discarded}
             </p>
           )}
         </Card>
@@ -366,9 +438,16 @@ export default function PayrollPage() {
             </p>
           )}
           {prepareError && (
-            <p id="prepare-error" role="alert" className="mt-4 border-l-[3px] border-bad py-1 pl-3 text-[14px] text-bad">
-              {prepareError}
-            </p>
+            <div className="mt-4 flex flex-wrap items-center gap-3 border-l-[3px] border-bad py-1 pl-3">
+              <p id="prepare-error" role="alert" className="text-[14px] text-bad">
+                {prepareError}
+              </p>
+              {stale?.where === "prepare" && (
+                <Button size="sm" variant="secondary" onClick={() => void discardStale()}>
+                  Discard that upload
+                </Button>
+              )}
+            </div>
           )}
         </Card>
 
@@ -391,7 +470,7 @@ export default function PayrollPage() {
               suppressColumnVirtualisation
               suppressCellFocus
               loading={runsLoading}
-              overlayNoRowsTemplate="<span style='color:#6b7f7c;font-size:14px'>No payroll runs yet.</span>"
+              overlayNoRowsTemplate={runsFailed ? "<span></span>" : "<span style='color:#6b7f7c;font-size:14px'>No payroll runs yet.</span>"}
             />
           </div>
         </Card>

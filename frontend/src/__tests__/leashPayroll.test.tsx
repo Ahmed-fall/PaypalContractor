@@ -30,7 +30,7 @@ function renderPayroll() {
 const csv = (name = "hours.csv", body = "a,b\n1,2\n") => new File([body], name, { type: "text/csv" });
 
 /** Wrap the mock so a test can change one answer and see every call. */
-function spyTransport(override?: (req: TransportRequest) => ReturnType<Transport> | null) {
+function spyTransport(override?: (req: TransportRequest) => Promise<Awaited<ReturnType<Transport>> | null> | null) {
   const calls: TransportRequest[] = [];
   const t: Transport = async (req) => {
     calls.push(req);
@@ -170,7 +170,8 @@ describe("Leash Payroll home (WP-5.4 UI)", () => {
     renderPayroll();
     const select = await screen.findByLabelText("Milestone");
     await waitFor(() => expect(within(select).getAllByRole("option").length).toBeGreaterThan(1));
-    const option = within(select).getAllByRole("option")[1] as HTMLOptionElement;
+    const option = within(select).getByRole("option", { name: /Phase 1/ }) as HTMLOptionElement;
+    expect(option.value).toBe("ms_01"); // the milestone that already has an open run in the mock
     await user.selectOptions(select, option.value);
     await user.click(screen.getByRole("button", { name: "Prepare payroll" }));
     expect(await screen.findByText(/^Run page /)).toBeInTheDocument();
@@ -226,5 +227,190 @@ describe("Leash Payroll home (WP-5.4 UI)", () => {
     expect(within(grid).getByText("MS-01")).toBeInTheDocument();
     expect(within(grid).getByRole("link", { name: /Open run / })).toHaveAttribute("href", expect.stringMatching(/^\/leash\/payroll\/.+/));
     expect(within(grid).getByText("Not sent")).toBeInTheDocument();
+  });
+
+  it("disables the file input while a mapping is pending", async () => {
+    const user = userEvent.setup();
+    renderPayroll();
+    const input = screen.getByLabelText("Timesheet file");
+    await user.upload(input, csv());
+    await screen.findByRole("dialog");
+    expect(input).toBeDisabled();
+    expect(input).toHaveAccessibleDescription(/Match or discard the pending timesheet first/);
+  });
+
+  it("recovers from a pending upload the page does not know about", async () => {
+    const toasts: unknown[] = [];
+    const off = on("api-error", (e) => toasts.push(e));
+    const state = { blocked: true };
+    const calls = spyTransport((req) => {
+      if (req.method === "POST" && req.path === "/leash/payroll/runs" && state.blocked) {
+        return Promise.resolve({
+          status: 409,
+          body: { error: { code: "MAPPING_REQUIRED", message: "A timesheet still needs its column mapping.", details: { upload_id: "tsu_77" }, request_id: "r" } },
+        });
+      }
+      if (req.path === "/leash/timesheets/tsu_77/discard") {
+        state.blocked = false;
+        return Promise.resolve({ status: 200, body: { upload_id: "tsu_77", status: "REJECTED" } });
+      }
+      return null;
+    });
+    const user = userEvent.setup();
+    renderPayroll();
+    const select = await screen.findByLabelText("Milestone");
+    await waitFor(() => expect(within(select).getAllByRole("option").length).toBeGreaterThan(1));
+    await user.selectOptions(select, "ms_01");
+    await user.click(screen.getByRole("button", { name: "Prepare payroll" }));
+    await user.click(await screen.findByRole("button", { name: "Discard that upload" }));
+    expect(await screen.findByText("Upload discarded. You can prepare payroll again.")).toBeInTheDocument();
+    expect(calls.some((c) => c.path === "/leash/timesheets/tsu_77/discard")).toBe(true);
+    expect(screen.queryByRole("button", { name: "Discard that upload" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Prepare payroll" }));
+    expect(await screen.findByText(/^Run page /)).toBeInTheDocument();
+    expect(toasts).toEqual([]);
+    off();
+  });
+
+  it("says so when the blocking upload cannot be discarded", async () => {
+    spyTransport((req) => {
+      if (req.method === "POST" && req.path === "/leash/payroll/runs") {
+        return Promise.resolve({ status: 409, body: { error: { code: "MAPPING_REQUIRED", message: "x", details: { upload_id: "tsu_8" }, request_id: "r" } } });
+      }
+      if (req.path === "/leash/timesheets/tsu_8/discard") {
+        return Promise.resolve({ status: 409, body: { error: { code: "NOT_DISCARDABLE", message: "nope", details: null, request_id: "r" } } });
+      }
+      return null;
+    });
+    const user = userEvent.setup();
+    renderPayroll();
+    const select = await screen.findByLabelText("Milestone");
+    await waitFor(() => expect(within(select).getAllByRole("option").length).toBeGreaterThan(1));
+    await user.selectOptions(select, "ms_01");
+    await user.click(screen.getByRole("button", { name: "Prepare payroll" }));
+    await user.click(await screen.findByRole("button", { name: "Discard that upload" }));
+    expect(await screen.findByText("That timesheet is already in use.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Discard that upload" })).not.toBeInTheDocument();
+  });
+
+  it("a duplicate upload of a mapped timesheet cannot be discarded", async () => {
+    const user = userEvent.setup();
+    renderPayroll();
+    const input = screen.getByLabelText("Timesheet file");
+    await user.upload(input, csv("same.csv"));
+    await user.click(await within(await screen.findByRole("dialog")).findByRole("button", { name: "Confirm mapping" }));
+    await screen.findByText("9 rows for MS-01");
+
+    await user.upload(input, csv("same.csv"));
+    expect(await screen.findByText("This timesheet was already uploaded.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Discard that upload" }));
+    expect(await screen.findByText("That timesheet is already in use.")).toBeInTheDocument();
+  });
+
+  it("a discarded upload frees the file to be uploaded again", async () => {
+    const user = userEvent.setup();
+    renderPayroll();
+    const input = screen.getByLabelText("Timesheet file");
+    await user.upload(input, csv("again.csv"));
+    await user.click(await screen.findByRole("button", { name: "Discard upload" }));
+    await screen.findByText("Upload discarded. Choose another file.");
+    await user.upload(input, csv("again.csv"));
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("a duplicate upload offers a discard that works, then the upload can be retried", async () => {
+    const state = { dup: true };
+    spyTransport((req) => {
+      if (req.method === "POST" && req.path === "/leash/timesheets" && state.dup) {
+        return Promise.resolve({ status: 409, body: { error: { code: "DUPLICATE_UPLOAD", message: "This timesheet was already uploaded.", details: { upload_id: "tsu_5" }, request_id: "r" } } });
+      }
+      if (req.path === "/leash/timesheets/tsu_5/discard") {
+        state.dup = false;
+        return Promise.resolve({ status: 200, body: { upload_id: "tsu_5", status: "REJECTED" } });
+      }
+      return null;
+    });
+    const user = userEvent.setup();
+    renderPayroll();
+    const input = screen.getByLabelText("Timesheet file");
+    await user.upload(input, csv());
+    await user.click(await screen.findByRole("button", { name: "Discard that upload" }));
+    expect(await screen.findByText("Upload discarded. Choose another file.")).toBeInTheDocument();
+    await user.upload(input, csv());
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("confirm closes the dialog when the upload is no longer pending", async () => {
+    spyTransport((req) =>
+      req.path.endsWith("/mapping")
+        ? Promise.resolve({ status: 409, body: { error: { code: "UPLOAD_NOT_PENDING", message: "This timesheet does not need a column mapping.", details: null, request_id: "r" } } })
+        : null,
+    );
+    const user = userEvent.setup();
+    renderPayroll();
+    await user.upload(screen.getByLabelText("Timesheet file"), csv());
+    await user.click(await screen.findByRole("button", { name: "Confirm mapping" }));
+    expect(await screen.findByText(/no longer waiting for a column mapping/)).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Timesheet file")).toBeEnabled();
+  });
+
+  it("shows a duplicate target in the proposal immediately, and colliding headers", async () => {
+    const spec = (headers: string[], mapping: Record<string, string>) =>
+      spyTransport((req) =>
+        req.method === "POST" && req.path === "/leash/timesheets"
+          ? Promise.resolve({ status: 201, body: { upload_id: "tsu_4", status: "MAPPING_REQUIRED", row_count: 2, headers, proposal: { mapping, confidence: {} } } })
+          : null,
+      );
+    spec(["A", "B", "C", "D"], { A: "member", B: "hours", C: "hours", D: "milestone_code" });
+    const user = userEvent.setup();
+    const first = renderPayroll();
+    await user.upload(screen.getByLabelText("Timesheet file"), csv());
+    expect(await screen.findByText("Only one column can be Hours.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Confirm mapping" })).toBeDisabled();
+    first.unmount();
+
+    spec(["Hours", " hours "], { Hours: "hours" });
+    renderPayroll();
+    await user.upload(screen.getByLabelText("Timesheet file"), csv("b.csv"));
+    expect(await screen.findByText(/Two columns are both called "hours"/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Confirm mapping" })).toBeDisabled();
+  });
+
+  it("double-clicking Confirm mapping sends one request", async () => {
+    const calls = spyTransport((req) =>
+      req.path.endsWith("/mapping") ? new Promise<null>((r) => setTimeout(() => r(null), 50)) : null,
+    );
+    const user = userEvent.setup();
+    renderPayroll();
+    await user.upload(screen.getByLabelText("Timesheet file"), csv());
+    await user.dblClick(await screen.findByRole("button", { name: "Confirm mapping" }));
+    await screen.findByText("9 rows for MS-01");
+    expect(calls.filter((c) => c.path.endsWith("/mapping"))).toHaveLength(1);
+  });
+
+  it("double-clicking Prepare payroll sends one request", async () => {
+    const calls = spyTransport((req) =>
+      req.method === "POST" && req.path === "/leash/payroll/runs" ? new Promise<null>((r) => setTimeout(() => r(null), 50)) : null,
+    );
+    const user = userEvent.setup();
+    renderPayroll();
+    const select = await screen.findByLabelText("Milestone");
+    await waitFor(() => expect(within(select).getAllByRole("option").length).toBeGreaterThan(1));
+    await user.selectOptions(select, "ms_01");
+    await user.dblClick(screen.getByRole("button", { name: "Prepare payroll" }));
+    await screen.findByText(/^Run page /);
+    expect(calls.filter((c) => c.method === "POST" && c.path === "/leash/payroll/runs")).toHaveLength(1);
+  });
+
+  it("does not claim there are no runs when loading them failed", async () => {
+    spyTransport((req) =>
+      req.method === "GET" && req.path === "/leash/payroll/runs"
+        ? Promise.resolve({ status: 500, body: { error: { code: "INTERNAL_ERROR", message: "boom", details: null, request_id: "r" } } })
+        : null,
+    );
+    renderPayroll();
+    expect(await screen.findByText("Could not load the payroll runs. Reload the page.")).toBeInTheDocument();
+    expect(screen.queryByText("No payroll runs yet.")).not.toBeInTheDocument();
   });
 });

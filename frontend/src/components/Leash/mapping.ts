@@ -25,3 +25,15 @@ export function mappingProblem(choice: Record<string, TimesheetField | "">): str
   return null;
 }
 
+
+/** Headers the server treats as one column (it compares them trimmed and lowercased). */
+export function headerCollision(headers: string[]): string | null {
+  const seen = new Map<string, string>();
+  for (const h of headers) {
+    const key = h.trim().toLowerCase();
+    const first = seen.get(key);
+    if (first !== undefined) return `Two columns are both called "${key}". Rename one in the file and upload it again.`;
+    seen.set(key, h);
+  }
+  return null;
+}

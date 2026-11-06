@@ -134,6 +134,7 @@ export function resetMockState(): void {
   state = seed();
   payrollMock = { run: null, sentGets: 0 };
   pendingUploadId = null;
+  uploadKeys.clear();
   teamMock = null;
   policyMock = { active: null, latest: 0, drafts: {} };
   try {
@@ -690,13 +691,41 @@ let payrollMock: { run: PayrollRunOut | null; sentGets: number } = { run: null, 
 /** Like the real backend: an upload waiting for its column mapping blocks run creation (409 MAPPING_REQUIRED). */
 let pendingUploadId: string | null = null;
 
+/** Uploads the mock has seen: file key (name + size) -> upload id. A discarded upload frees its key. */
+const uploadKeys = new Map<string, string>();
+
 function createRunMock(r: TransportRequest): TransportResponse {
   const milestoneId = (r.body as { milestone_id?: string | null } | null)?.milestone_id ?? null;
   if (!state.rows.some((row) => row.milestone_id === milestoneId)) return fail(404, "NOT_FOUND", "Milestone not found.");
+  // Real backend order: an unsent run for the milestone is returned as is, before the pending-upload check.
+  const open = payrollMock.run ?? currentRun();
+  if (open && open.milestone_id === milestoneId && !["SENT", "PAID", "PARTIAL", "FAILED"].includes(open.status)) {
+    return ok(open, 200);
+  }
   if (pendingUploadId) {
     return fail(409, "MAPPING_REQUIRED", "A timesheet still needs its column mapping.", { upload_id: pendingUploadId });
   }
-  return leashFixture("payroll_run_awaiting_approval.json", 201);
+  return fail(404, "NOT_FOUND", "No timesheet hours for this milestone.");
+}
+
+function uploadMock(r: TransportRequest): TransportResponse {
+  const file = r.form?.get("file");
+  const key = file instanceof File ? `${file.name}:${file.size}` : null;
+  const existing = key ? uploadKeys.get(key) : undefined;
+  if (existing) return fail(409, "DUPLICATE_UPLOAD", "This timesheet was already uploaded.", { upload_id: existing });
+  const res = leashFixture("timesheet_mapping_required.json", 201);
+  const id = (res.body as { upload_id?: string } | null)?.upload_id ?? null;
+  pendingUploadId = id;
+  if (key && id) uploadKeys.set(key, id);
+  return res;
+}
+
+function isKnownUpload(id: string): boolean {
+  return [...uploadKeys.values()].includes(id);
+}
+
+function freeUploadKey(id: string): void {
+  for (const [k, v] of uploadKeys) if (v === id) uploadKeys.delete(k);
 }
 
 function currentRun(): PayrollRunOut | null {
@@ -864,18 +893,23 @@ const routes: Array<[string, RegExp, Handler]> = [
     return ok(m, 201);
   }],
   ["PATCH", /^\/leash\/team\/([^/]+)$/, (r, [id]) => patchMember(r, decodeURIComponent(id))],
-  ["POST", /^\/leash\/timesheets$/, () => {
-    const res = leashFixture("timesheet_mapping_required.json", 201);
-    pendingUploadId = (res.body as { upload_id?: string } | null)?.upload_id ?? null;
-    return res;
-  }],
-  ["POST", /^\/leash\/timesheets\/([^/]+)\/mapping$/, () => {
+  ["POST", /^\/leash\/timesheets$/, (r) => uploadMock(r)],
+  ["POST", /^\/leash\/timesheets\/([^/]+)\/mapping$/, (_r, [id]) => {
+    const upload = decodeURIComponent(id);
+    if (isKnownUpload(upload) && upload !== pendingUploadId) {
+      return fail(409, "UPLOAD_NOT_PENDING", "This timesheet does not need a column mapping.");
+    }
     pendingUploadId = null;
     return leashFixture("timesheet_parsed.json");
   }],
   ["POST", /^\/leash\/timesheets\/([^/]+)\/discard$/, (_r, [id]) => {
+    const upload = decodeURIComponent(id);
+    if (isKnownUpload(upload) && upload !== pendingUploadId) {
+      return fail(409, "NOT_DISCARDABLE", "Only a timesheet awaiting mapping can be discarded.");
+    }
     pendingUploadId = null;
-    return ok({ upload_id: decodeURIComponent(id), status: "REJECTED" });
+    freeUploadKey(upload);
+    return ok({ upload_id: upload, status: "REJECTED" });
   }],
   ["GET", /^\/leash\/payroll\/runs$/, () => {
     const run = currentRun();
