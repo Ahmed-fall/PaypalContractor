@@ -165,3 +165,63 @@ def test_duplicate_capture_is_rejected(client: TestClient) -> None:
     assert first.status_code == 200
     assert second.status_code == 409
     assert second.json()["error"]["code"] == "CAPTURE_ALREADY_PROCESSED"
+
+
+@respx.mock
+def test_card_order_captured_at_create_skips_capture_call(client: TestClient) -> None:
+    """A card source settles at create time: /capture would 422 ORDER_ALREADY_CAPTURED."""
+    mock_token()
+    order_id = "ORDER-CARD-COMPLETED"
+    create = respx.post(f"{SANDBOX}/v2/checkout/orders").mock(
+        return_value=Response(201, json=capture_body(f"CAP-{order_id}", order_id, "1000.00"))
+    )
+    capture = respx.post(f"{SANDBOX}/v2/checkout/orders/{order_id}/capture").mock(
+        return_value=Response(422, json={"name": "UNPROCESSABLE_ENTITY"})
+    )
+
+    got = client.post(
+        "/simulator/pay",
+        json=pay_request("1000.00", "2026-10-14", "card-key"),
+        headers=DEMOS,
+    )
+
+    assert got.status_code == 200
+    assert got.json()["paypal_capture_id"] == f"CAP-{order_id}"
+    assert got.json()["capture_status"] == "COMPLETED"
+    assert create.call_count == 1
+    assert create.calls[0].request.headers["PayPal-Request-Id"] == "ms_seed_01:card-key"
+    assert not capture.called
+    assert client.get("/ledger").json()["summary"]["total_captured"] == "1000.00"
+
+
+@respx.mock
+def test_created_order_is_captured_with_its_own_request_id(client: TestClient) -> None:
+    mock_token()
+    mock_order("ORDER-CREATED-01", "1000.00")
+    capture = respx.routes[-1]
+
+    got = client.post(
+        "/simulator/pay",
+        json=pay_request("1000.00", "2026-10-14", "created-key"),
+        headers=DEMOS,
+    )
+
+    assert got.status_code == 200
+    assert capture.call_count == 1
+    assert capture.calls[0].request.headers["PayPal-Request-Id"] == "ms_seed_01:created-key:capture"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"id": "O-1", "status": "CREATED"},
+        {"id": "O-1", "status": "APPROVED", "purchase_units": [{}]},
+        {"id": "O-1", "status": "COMPLETED", "purchase_units": [{}]},
+        {"id": "O-1", "status": "COMPLETED", "purchase_units": [{"payments": {"captures": []}}]},
+    ],
+)
+def test_captured_at_create_needs_a_completed_capture(body: dict[str, Any]) -> None:
+    from backend.app.services.paypal.orders import captured_at_create
+
+    assert not captured_at_create(body)
+    assert captured_at_create(capture_body("CAP-1", "O-1", "1.00"))

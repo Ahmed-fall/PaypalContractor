@@ -51,9 +51,12 @@ async def pay(
         payer_email=str(request.payer_email),
         request_id=request_id,
     )
-    capture = await orders.capture_order(
-        order_id=str(order["id"]), request_id=f"{request_id}:capture"
-    )
+    if orders.captured_at_create(order):
+        capture = order  # card source: create already settled; /capture would 422
+    else:
+        capture = await orders.capture_order(
+            order_id=str(order["id"]), request_id=f"{request_id}:capture"
+        )
     fields = orders.capture_fields(capture)
     # The simulated clock is the payment date the owner chose; the authoritative
     # seconds come from the sandbox response body only for real webhooks.

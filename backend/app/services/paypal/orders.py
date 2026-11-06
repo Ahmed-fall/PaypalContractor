@@ -67,6 +67,22 @@ async def create_order(
     )
 
 
+def captured_at_create(order: dict[str, Any]) -> bool:
+    """True when the create response already carries the capture.
+
+    With a card ``payment_source`` Orders v2 settles at create time: it answers
+    ``status: COMPLETED`` with ``purchase_units[0].payments.captures[0]`` filled,
+    and a follow-up ``/capture`` fails with 422 ``ORDER_ALREADY_CAPTURED``.
+    """
+    if order.get("status") != "COMPLETED":
+        return False
+    try:
+        captures = order["purchase_units"][0]["payments"]["captures"]
+    except (KeyError, IndexError, TypeError):
+        return False
+    return isinstance(captures, list) and bool(captures)
+
+
 async def capture_order(*, order_id: str, request_id: str) -> dict[str, Any]:
     return await paypal_request(
         "POST", CAPTURE_ORDER_PATH.format(order_id=order_id), request_id=request_id
