@@ -808,6 +808,36 @@ def _send(ctx: Ctx, run_id: str, flags: list[str], key: str = "k") -> httpx.Resp
 
 
 @respx.mock
+def test_send_refuses_when_total_differs_from_what_owner_saw(ctx: Ctx) -> None:
+    route = respx.post(PAYOUTS_URL).mock(return_value=_created())
+    run = _create_run(ctx)
+    run_id = run["run_id"]
+    omar = _line(run, "Omar")["line_id"]
+    seen = ctx.patch(f"/payroll/runs/{run_id}/lines/{omar}", json={"owner_action": "EXCLUDED"})
+    assert seen.json()["total"] == "420.00"
+    sara = ctx.get("/team").json()
+    sara_id = next(m["member_id"] for m in sara if m["name"] == "Sara")
+    assert ctx.patch(f"/team/{sara_id}", json={"hourly_rate": "30.00"}).status_code == 200
+    body = {"confirm": True, "approve_run_flags": [], "idempotency_key": "k"}
+
+    stale = ctx.post(f"/payroll/runs/{run_id}/send?expected_total=420.00", json=body)
+    assert stale.status_code == 409, stale.text
+    assert stale.json()["error"]["code"] == "RUN_NOT_SENDABLE"
+    assert route.call_count == 0
+
+    bad = ctx.post(f"/payroll/runs/{run_id}/send?expected_total=4.2", json=body)
+    assert bad.status_code == 422
+    assert route.call_count == 0
+
+    fresh = ctx.get(f"/payroll/runs/{run_id}").json()["total"]
+    assert fresh != "420.00"
+    ok = ctx.post(f"/payroll/runs/{run_id}/send?expected_total={fresh}", json=body)
+    assert ok.status_code == 202, ok.text
+    assert ok.json()["total"] == fresh
+    assert route.call_count == 1
+
+
+@respx.mock
 def test_run_level_policy_ask_blocks_send_until_approved(ctx: Ctx) -> None:
     route = respx.post(PAYOUTS_URL).mock(return_value=_created())
     _activate_rule(

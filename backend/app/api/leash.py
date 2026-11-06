@@ -592,8 +592,13 @@ def _already_sent_with_key(db: Session, run_id: str, key: str) -> bool:
     dependencies=_write,
 )
 async def send_payroll_run(
-    run_id: str, body: PayrollSendRequest, db: Session = Depends(get_db)
+    run_id: str,
+    body: PayrollSendRequest,
+    db: Session = Depends(get_db),
+    expected_total: str | None = Query(None, pattern=r"^\d{1,10}\.\d{2}$"),
 ) -> PayrollSendResponse:
+    """``expected_total`` (optional) is the total shown in the owner's confirm dialog;
+    the send is refused if the re-checked run would pay anything else."""
     if _already_sent_with_key(db, run_id, body.idempotency_key):
         # A replay of the same send: PayPal is not called again, polling is idempotent.
         payouts_sync.start_polling(run_id)
@@ -604,8 +609,17 @@ async def send_payroll_run(
         raise ApiError(
             409, "RUN_NOT_SENDABLE", "The payroll run changed. Refresh it and try again."
         )
+    expected = Decimal(expected_total) if expected_total is not None else None
+    if expected is not None and current.total != expected:
+        raise ApiError(
+            409, "RUN_NOT_SENDABLE", "The payroll run changed. Refresh it and try again."
+        )
     await payouts.send_payroll_batch(
-        run_id, ready, body.idempotency_key, approve_run_flags=body.approve_run_flags
+        run_id,
+        ready,
+        body.idempotency_key,
+        approve_run_flags=body.approve_run_flags,
+        expected_total=expected,
     )
     payouts_sync.start_polling(run_id)
     return _send_response(db, run_id)

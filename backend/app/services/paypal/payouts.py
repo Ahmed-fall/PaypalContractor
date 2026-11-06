@@ -257,6 +257,7 @@ async def send_payroll_batch(
     idempotency_key: str,
     *,
     approve_run_flags: Sequence[str] = (),
+    expected_total: Decimal | None = None,
 ) -> str:
     """POST one Payouts batch for the run and return PayPal's batch id.
 
@@ -265,7 +266,9 @@ async def send_payroll_batch(
     ``lines`` only name what it expects to pay: under the run lock the whole gate is
     re-run and the batch is built from that fresh database result alone (gross and the
     roster's current email). If the two sets of line ids differ the run changed
-    meanwhile, so nothing is sent.
+    meanwhile, so nothing is sent. ``expected_total`` is the total the owner confirmed: if
+    the fresh gate would pay a different amount (a rate or timesheet changed since the page
+    loaded), nothing is sent either.
     """
     async with runs.run_lock(run_id):
         stored = await asyncio.to_thread(_existing, run_id, idempotency_key)
@@ -275,6 +278,10 @@ async def send_payroll_batch(
         if {ln.line_id for ln in lines} != {ln.line_id for ln in gate.lines}:
             raise _not_sendable(_CHANGED)
         lines = gate.lines
+        if expected_total is not None and money(
+            sum((ln.gross for ln in lines), Decimal("0.00"))
+        ) != money(expected_total):
+            raise _not_sendable(_CHANGED)
         line_ids = [ln.line_id for ln in lines]
         reserved = await _reserve_shielded(run_id, lines, idempotency_key, gate.checked)
         try:
