@@ -82,7 +82,15 @@ def mock_everything() -> None:
         )
     )
     respx.post(f"{SANDBOX}/v2/invoicing/invoices").mock(
-        return_value=Response(201, json={"id": "INV-TEST-REMEDIATION-01"})
+        # PayPal's default create response is a link, not the invoice body.
+        return_value=Response(
+            201,
+            json={
+                "rel": "self",
+                "href": f"{SANDBOX}/v2/invoicing/invoices/INV-TEST-REMEDIATION-01",
+                "method": "GET",
+            },
+        )
     )
     respx.post(f"{SANDBOX}/v2/invoicing/invoices/INV-TEST-REMEDIATION-01/send").mock(
         return_value=Response(200, json={})

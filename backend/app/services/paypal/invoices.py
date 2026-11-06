@@ -8,6 +8,7 @@ PIT-11: the invoice number is derived from the discrepancy ULID, never a counter
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlsplit
 
 from ...ai.paypal_tools import (
     CreateInvoiceParameters,
@@ -68,6 +69,24 @@ def payer_view_url(document: dict[str, Any]) -> str | None:
     return None
 
 
+def draft_invoice_id(document: dict[str, Any]) -> str:
+    """The new draft's id from an Invoicing v2 create response.
+
+    Without ``Prefer: return=representation`` PayPal answers ``{rel, href, method}``
+    instead of the invoice body; the id is then the last segment of ``href``
+    (``.../v2/invoicing/invoices/INV2-XXXX``).
+    """
+    invoice_id = document.get("id")
+    if isinstance(invoice_id, str) and invoice_id.strip():
+        return invoice_id.strip()
+    href = document.get("href")
+    if isinstance(href, str):
+        prefix, _, tail = urlsplit(href.strip()).path.rstrip("/").rpartition("/")
+        if prefix.endswith(INVOICES_PATH) and tail:
+            return tail
+    raise KeyError("PayPal draft response has no invoice id")
+
+
 class InvoicingExecutor:
     """One instance per remediation attempt: carries the PIT-11 context."""
 
@@ -83,10 +102,7 @@ class InvoicingExecutor:
         document = await paypal_request(
             "POST", INVOICES_PATH, request_id=request_id, json_body=body
         )
-        invoice_id = document.get("id")
-        if not isinstance(invoice_id, str) or not invoice_id.strip():
-            raise KeyError("PayPal draft response has no invoice id")
-        return invoice_id.strip()
+        return draft_invoice_id(document)
 
     async def send_invoice(self, params: SendInvoiceParameters) -> None:
         await paypal_request(
