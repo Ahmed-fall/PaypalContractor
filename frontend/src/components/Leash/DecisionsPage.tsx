@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgGridReact, type CustomCellRendererProps } from "ag-grid-react";
 import type { ColDef, GetRowIdParams } from "ag-grid-community";
-import { api, isApiError } from "../../api/client";
+import { api } from "../../api/client";
 import { Button } from "../common/Button";
 import { Card, PageHeader } from "../common/Card";
 import { Pill } from "../common/StatusBadge";
 import { formatDateTime } from "../../lib/dates";
 import { formatMoney } from "../../lib/money";
 import type { DecisionLogEntry, DecisionSubjectType, GuardAction, LeashDecision } from "../../types/contracts";
-import { flagLabel } from "./format";
+import { errorText, flagLabel } from "./format";
+import { selectCls } from "./styles";
 
 const PAGE_SIZE = 50;
 
@@ -46,10 +47,6 @@ function RuleChips({ value }: Cell<string[]>) {
   );
 }
 
-function errorMessage(e: unknown): string {
-  return isApiError(e) ? e.message : "Could not load the decision log.";
-}
-
 /** Append-only log of every Leash decision, newest first. */
 export default function DecisionsPage() {
   const [rows, setRows] = useState<DecisionLogEntry[]>([]);
@@ -75,7 +72,7 @@ export default function DecisionsPage() {
       setCursor(page.next_cursor);
     } catch (e) {
       if (ticket !== latest.current) return;
-      setError(errorMessage(e));
+      setError(errorText(e, "Could not load the decision log."));
     } finally {
       if (ticket === latest.current) setLoading(false);
     }
@@ -87,11 +84,11 @@ export default function DecisionsPage() {
 
   const colDefs = useMemo<ColDef<DecisionLogEntry>[]>(
     () => [
-      { colId: "time", headerName: "Time", field: "created_at", width: 170, valueFormatter: (p) => formatDateTime(p.value as string) },
+      { colId: "time", headerName: "Time", field: "created_at", width: 160, valueFormatter: (p) => formatDateTime(p.value as string) },
       { colId: "action", headerName: "Action", field: "action_type", width: 180, valueFormatter: (p) => ACTION_LABEL[p.value as GuardAction] ?? String(p.value) },
-      { colId: "subject", headerName: "Subject", field: "subject_id", width: 160 },
+      { colId: "subject", headerName: "Subject", field: "subject_id", width: 140 },
       { colId: "decision", headerName: "Decision", field: "decision", width: 110, cellRenderer: DecisionCell },
-      { colId: "rules", headerName: "Rules", field: "rule_ids", flex: 1, minWidth: 200, sortable: false, cellRenderer: RuleChips },
+      { colId: "rules", headerName: "Rules", field: "rule_ids", flex: 1, minWidth: 250, sortable: false, cellRenderer: RuleChips },
       {
         colId: "amount",
         headerName: "Amount",
@@ -100,7 +97,7 @@ export default function DecisionsPage() {
         type: "rightAligned",
         valueFormatter: (p) => (p.value ? formatMoney(p.value as string) : ""),
       },
-      { colId: "reason", headerName: "Reason", field: "reason", flex: 2, minWidth: 280, wrapText: true, autoHeight: true },
+      { colId: "reason", headerName: "Reason", field: "reason", flex: 2, minWidth: 260, wrapText: true, autoHeight: true },
       { colId: "actor", headerName: "By", field: "actor", width: 90, valueFormatter: (p) => (p.value === "owner" ? "You" : "Leash") },
     ],
     [],
@@ -113,10 +110,10 @@ export default function DecisionsPage() {
         title="Decisions"
         description="Every time Leash allowed, held or blocked a money action, with the rule behind it. The log is never edited."
         actions={
-          <label className="flex items-center gap-2 text-[13px] text-ink-soft">
+          <label className="flex items-center gap-2 whitespace-nowrap text-[13px] text-ink-soft">
             Subject type
             <select
-              className="h-9 rounded border border-paper-line bg-white px-2 text-[14px] text-ink"
+              className={`${selectCls} w-auto`}
               value={subject}
               onChange={(e) => setSubject(e.target.value as "" | DecisionSubjectType)}
             >

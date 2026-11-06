@@ -1,20 +1,20 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { AgGridReact, type CustomCellRendererProps } from "ag-grid-react";
 import type { ColDef, GetRowIdParams } from "ag-grid-community";
-import { api, isApiError } from "../../api/client";
+import { isApiError } from "../../api/client";
 import { Button } from "../common/Button";
 import { Card, PageHeader } from "../common/Card";
 import { Modal } from "../common/Modal";
 import { Pill } from "../common/StatusBadge";
-import { addMember, patchMember } from "./api";
+import { addMember, listTeamQuiet, patchMember } from "./api";
 import { formatDate } from "../../lib/dates";
 import { formatMoney, isMoney, normaliseMoney, toCents } from "../../lib/money";
 import type { TeamMemberOut } from "../../types/contracts";
-import { maskEmail } from "./format";
+import { errorText, maskEmail } from "./format";
+import { inputCls } from "./styles";
 
+const MAX_RATE_CENTS = 99999999; // 999999.99
 const RATE_ERROR = "Enter the rate in dollars and cents, like 25.00.";
-const input =
-  "h-10 w-full rounded border border-paper-line bg-white px-3 text-[14px] outline-none placeholder:text-ink-muted focus:border-ink";
 
 interface GridContext {
   edit: (m: TeamMemberOut) => void;
@@ -22,13 +22,19 @@ interface GridContext {
 type CellProps = CustomCellRendererProps<TeamMemberOut, unknown, GridContext>;
 
 function validRate(value: string): boolean {
-  return isMoney(value) && toCents(value) > 0;
+  return isMoney(value) && toCents(value) > 0 && toCents(value) <= MAX_RATE_CENTS;
 }
 
-/** A server rejection that belongs to a field, shown in words. */
+/** A server rejection in words: a 422 shows the field messages the server sent. */
 function serverMessage(e: unknown): string {
-  if (isApiError(e)) return e.message;
-  return "Something went wrong. Try again.";
+  if (isApiError(e) && e.status === 422) {
+    const list = (e.details as { fields?: unknown } | null)?.fields;
+    const msgs = Array.isArray(list)
+      ? (list as Array<{ msg?: string }>).map((f) => f.msg).filter((m): m is string => Boolean(m))
+      : [];
+    return msgs.length > 0 ? msgs.join(" ") : "Check the name, email and rate.";
+  }
+  return errorText(e);
 }
 
 function EditCell({ data, context }: CellProps) {
@@ -60,17 +66,25 @@ export default function TeamPage() {
   const [confirmEmail, setConfirmEmail] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    let live = true;
-    api
-      .team()
-      .then((rows) => live && setMembers(rows))
-      .catch(() => undefined) // the global toast already told the owner
-      .finally(() => live && setLoading(false));
-    return () => {
-      live = false;
-    };
+  const [loadFailed, setLoadFailed] = useState(false);
+  const live = useRef(true);
+
+  const loadTeam = useCallback(() => {
+    setLoading(true);
+    setLoadFailed(false);
+    return listTeamQuiet()
+      .then((rows) => live.current && setMembers(rows))
+      .catch(() => live.current && setLoadFailed(true))
+      .finally(() => live.current && setLoading(false));
   }, []);
+
+  useEffect(() => {
+    live.current = true;
+    void loadTeam();
+    return () => {
+      live.current = false;
+    };
+  }, [loadTeam]);
 
   const openEdit = useCallback((m: TeamMemberOut) => {
     setEditing(m);
@@ -207,6 +221,14 @@ export default function TeamPage() {
 
       <div className="flex flex-col gap-6">
         <Card title="Roster">
+          {loadFailed && !loading && (
+            <p role="alert" className="mb-3 flex flex-wrap items-center gap-3 text-[14px] text-bad">
+              Couldn't load the team.
+              <Button size="sm" variant="secondary" onClick={() => void loadTeam()}>
+                Retry
+              </Button>
+            </p>
+          )}
           <div role="region" aria-label="Team members" className="ag-theme-quartz fd-grid w-full" data-testid="team-grid">
             <AgGridReact<TeamMemberOut>
               rowData={members}
@@ -229,12 +251,12 @@ export default function TeamPage() {
           <form onSubmit={submitAdd} className="grid gap-4 sm:grid-cols-[1fr_1.4fr_9rem_auto] sm:items-start" noValidate>
             <label className="block">
               <span className="text-[13px] font-medium text-ink-soft">Name</span>
-              <input className={`${input} mt-1`} value={name} onChange={(e) => setName(e.target.value)} required autoComplete="off" />
+              <input className={`${inputCls} mt-1`} value={name} onChange={(e) => setName(e.target.value)} required autoComplete="off" />
             </label>
             <label className="block">
               <span className="text-[13px] font-medium text-ink-soft">Payout email</span>
               <input
-                className={`${input} mt-1`}
+                className={`${inputCls} mt-1`}
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
@@ -246,7 +268,7 @@ export default function TeamPage() {
               <label className="block">
                 <span className="text-[13px] font-medium text-ink-soft">Hourly rate</span>
                 <input
-                  className={`${input} num mt-1`}
+                  className={`${inputCls} num mt-1`}
                   inputMode="decimal"
                   placeholder="25.00"
                   value={rate}
@@ -312,13 +334,13 @@ export default function TeamPage() {
             <form id="edit-member-form" onSubmit={onSaveClick} className="space-y-4" noValidate>
               <label className="block">
                 <span className="text-[13px] font-medium text-ink-soft">Payout email</span>
-                <input id="edit-email" className={`${input} mt-1`} type="email" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} required />
+                <input id="edit-email" className={`${inputCls} mt-1`} type="email" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} required />
               </label>
               <label className="block">
                 <span className="text-[13px] font-medium text-ink-soft">Hourly rate</span>
                 <input
                   id="edit-rate"
-                  className={`${input} num mt-1`}
+                  className={`${inputCls} num mt-1`}
                   inputMode="decimal"
                   value={editRate}
                   onChange={(e) => setEditRate(e.target.value)}

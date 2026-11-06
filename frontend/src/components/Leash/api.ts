@@ -30,6 +30,9 @@ export const addMember = (body: TeamMemberCreate) => request<TeamMemberOut>("POS
 export const patchMember = (memberId: string, body: TeamMemberUpdate) =>
   request<TeamMemberOut>("PATCH", `/leash/team/${encodeURIComponent(memberId)}`, { body, quiet: true });
 
+/** The roster. Quiet: the Team screen shows its own load error with a Retry. */
+export const listTeamQuiet = () => request<TeamMemberOut[]>("GET", "/leash/team", { quiet: true });
+
 /** The latest 20 payroll runs, newest first. */
 export const listPayrollRuns = () => request<PayrollRunOut[]>("GET", "/leash/payroll/runs", { quiet: true });
 

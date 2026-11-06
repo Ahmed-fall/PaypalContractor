@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import { on } from "../lib/events";
-import { setTransport, type Transport, type TransportRequest, type TransportResponse } from "../api/client";
+import { api, setTransport, type Transport, type TransportRequest, type TransportResponse } from "../api/client";
 import { setDemoKey } from "../api/demoKey";
 import { mockTransport, resetMockState, setMockLatency } from "../api/mocks";
 import PayrollRunPage from "../components/Leash/PayrollRunPage";
@@ -26,6 +26,35 @@ const router = { v7_startTransition: true, v7_relativeSplatPath: true } as const
 const RUN = "prn_0001";
 const runPath = `/leash/payroll/runs/${RUN}`;
 const sendPath = `${runPath}/send`;
+
+
+const LINE_IDS: Record<string, string> = { Omar: "prl_0001", Sara: "prl_0002", Youssef: "prl_0003" };
+
+/** A line's cells: AG Grid splits a row with pinned columns into left / middle / right row elements. */
+function lineRow(name: keyof typeof LINE_IDS) {
+  const parts = () => Array.from(document.querySelectorAll<HTMLElement>(`[row-id="${LINE_IDS[name]}"]`));
+  const first = <T,>(find: (el: HTMLElement) => T | null): T | null => {
+    for (const el of parts()) {
+      const hit = find(el);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  return {
+    queryByText: (t: string | RegExp) => first((el) => within(el).queryByText(t)),
+    getByText: (t: string | RegExp) => {
+      const hit = first((el) => within(el).queryByText(t));
+      if (!hit) throw new Error(`No "${String(t)}" in ${name}'s row`);
+      return hit;
+    },
+    findByText: (t: string | RegExp) => waitFor(() => lineRow(name).getByText(t)),
+    getByRole: (role: string, opts?: { name: string | RegExp }) => {
+      const hit = first((el) => within(el).queryByRole(role, opts));
+      if (!hit) throw new Error(`No ${role} in ${name}'s row`);
+      return hit;
+    },
+  };
+}
 
 const clone = <T,>(v: unknown): T => structuredClone(v) as T;
 const awaitingRun = () => clone<PayrollRunOut>(awaiting);
@@ -89,6 +118,29 @@ describe("Leash payroll run review (WP-5.5)", () => {
     vi.useRealTimers();
   });
 
+  it("mock: another run id is a 404 for get, patch and send", async () => {
+    await expect(api.payrollRun("prn_9999")).rejects.toMatchObject({ status: 404 });
+    await expect(api.updatePayrollLine("prn_9999", "prl_0001", { owner_action: "EXCLUDED" })).rejects.toMatchObject({ status: 404 });
+    await expect(api.sendPayroll("prn_9999", { idempotency_key: "k", confirm: true, approve_run_flags: [] })).rejects.toMatchObject({ status: 404 });
+    expect((await api.payrollRun(RUN)).run_id).toBe(RUN);
+  });
+
+  it("mock: an unticked run flag blocks the send even when the run decision is not ASK", async () => {
+    const run = await api.payrollRun(RUN);
+    run.run_decision = "ALLOW";
+    run.lines.forEach((l) => (l.owner_action = "APPROVED"));
+    await expect(api.sendPayroll(RUN, { idempotency_key: "k", confirm: true, approve_run_flags: [] })).rejects.toMatchObject({
+      status: 409,
+      details: { open_run_flags: ["PR-06"] },
+    });
+  });
+
+  it("mock: an owner action lands in the decision log", async () => {
+    await api.updatePayrollLine(RUN, "prl_0001", { owner_action: "EXCLUDED" });
+    const log = await api.decisions({});
+    expect(log.items[0]).toMatchObject({ actor: "owner", rule_ids: ["OWNER"], subject_id: "prl_0001" });
+  });
+
   it("demo flow: exclude Omar, pay the team once and watch the statuses land", async () => {
     const calls = spyTransport();
     const toasts: unknown[] = [];
@@ -132,10 +184,10 @@ describe("Leash payroll run review (WP-5.5)", () => {
     await tick(3000);
     await tick(3000);
     expect(screen.getByText("Paid: 2 people, $420.00")).toBeInTheDocument();
-    const sara = screen.getByRole("row", { name: /Sara/ });
-    const youssef = screen.getByRole("row", { name: /Youssef/ });
-    expect(within(sara).getByText("Paid")).toBeInTheDocument();
-    expect(within(youssef).getByText("Paid")).toBeInTheDocument();
+    const sara = lineRow("Sara");
+    const youssef = lineRow("Youssef");
+    expect(sara.getByText("Paid")).toBeInTheDocument();
+    expect(youssef.getByText("Paid")).toBeInTheDocument();
 
     const settled = runGets(calls).length;
     await tick(10000);
@@ -237,7 +289,7 @@ describe("Leash payroll run review (WP-5.5)", () => {
 
     expect(await screen.findByRole("button", { name: "Exclude Omar" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Approve Omar" })).not.toBeInTheDocument();
-    expect(within(screen.getByRole("row", { name: /Omar/ })).getByText("Not checked yet")).toBeInTheDocument();
+    expect(lineRow("Omar").getByText("Leash couldn't check this line yet")).toBeInTheDocument();
     expect(payTeam()).toBeDisabled();
     expect(screen.getByText(/1 line still needs your decision/)).toBeInTheDocument();
 
@@ -339,7 +391,7 @@ describe("Leash payroll run review (WP-5.5)", () => {
     const alert = await screen.findByRole("alert", { name: "Still needs your decision" });
     expect(within(alert).getByText(/Sara/)).toBeInTheDocument();
     expect(within(alert).getByText(/Over 80% of cash received/)).toBeInTheDocument();
-    expect(within(screen.getByRole("row", { name: /Sara/ })).getByText("Needs your decision")).toBeInTheDocument();
+    expect(lineRow("Sara").getByText("Needs your decision")).toBeInTheDocument();
     await waitFor(() => expect(runGets(calls).length).toBeGreaterThan(getsBefore)); // re-fetched
     expect(sends(calls)).toHaveLength(1);
     expect(toasts).toHaveLength(0);
@@ -373,8 +425,8 @@ describe("Leash payroll run review (WP-5.5)", () => {
     const user = userEvent.setup();
     renderRun();
     await user.click(await screen.findByRole("button", { name: "Approve Omar" }));
-    const row = screen.getByRole("row", { name: /Omar/ });
-    expect(await within(row).findByText(/could not be checked/)).toBeInTheDocument();
+    const row = lineRow("Omar");
+    expect(await row.findByText(/could not be checked/)).toBeInTheDocument();
     expect(toasts).toHaveLength(0);
     off();
   });
@@ -457,7 +509,7 @@ describe("Leash payroll run review (WP-5.5)", () => {
     renderRun();
     expect(await screen.findByRole("button", { name: "Approve Omar" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Undo exclude Omar" })).not.toBeInTheDocument();
-    expect(within(screen.getByRole("row", { name: /Omar/ })).getByText("Payout email changed")).toBeInTheDocument();
+    expect(lineRow("Omar").getByText("Payout email changed")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Undo exclude Youssef" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Dina/ })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Undo exclude Youssef" }));
@@ -693,7 +745,7 @@ describe("Leash payroll run review (WP-5.5)", () => {
     expect(
       await screen.findByText("Partly paid: 1 of 2 people paid, $220.00. Youssef hasn't claimed it yet. Check the lines below."),
     ).toBeInTheDocument();
-    expect(within(screen.getByRole("row", { name: /Youssef/ })).getByText("Youssef hasn't claimed it yet")).toBeInTheDocument();
+    expect(lineRow("Youssef").getByText("Youssef hasn't claimed it yet")).toBeInTheDocument();
   });
 
   it("grid root carries the label, PR-06 uses the policy limit (M7, M8)", async () => {

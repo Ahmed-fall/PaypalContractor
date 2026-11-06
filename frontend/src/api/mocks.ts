@@ -660,18 +660,26 @@ function leashFixture(name: string, status = 200): TransportResponse {
   return body === null ? fail(404, "NOT_FOUND", `Fixture ${name} is not available.`) : ok(body, status);
 }
 
-/**
- * The payroll run is stateful for the session so the demo can be clicked through:
- * GET -> exclude Omar -> send (202) -> two GETs say SENT -> the next says PAID.
- * Kept out of the persisted state on purpose; resetMockState() clears it.
- */
 /** The roster is stateful for the session too; cleared by resetMockState(). */
 let teamMock: TeamMemberOut[] | null = null;
 
 function roster(): TeamMemberOut[] {
   if (!teamMock) {
     const omar = pick<TeamMemberOut>(leashFixtures, "team_member_omar.json");
-    teamMock = omar ? [omar] : [];
+    // The demo run pays Sara and Youssef too (payroll_run_awaiting_approval.json), so they are on the roster.
+    const run = pick<PayrollRunOut>(leashFixtures, "payroll_run_awaiting_approval.json");
+    const others: TeamMemberOut[] = (run?.lines ?? [])
+      .filter((l) => l.member_name !== "Omar")
+      .map((l, i) => ({
+        member_id: `tm_0${i + 2}`,
+        name: l.member_name,
+        payout_email: l.payout_email,
+        hourly_rate: l.rate,
+        email_changed_at: null,
+        first_paid_at: "2026-09-30T12:00:00Z",
+        active: true,
+      }));
+    teamMock = omar ? [omar, ...others] : others;
   }
   return teamMock;
 }
@@ -679,7 +687,8 @@ function roster(): TeamMemberOut[] {
 function patchMember(req: TransportRequest, id: string): TransportResponse {
   const member = roster().find((m) => m.member_id === id);
   if (!member) return fail(404, "NOT_FOUND", `Team member ${id} was not found.`);
-  const body = (req.body ?? {}) as Partial<TeamMemberOut>;
+  const body = { ...((req.body ?? {}) as Partial<TeamMemberOut>) };
+  if (body.payout_email) body.payout_email = body.payout_email.trim().toLowerCase();
   if (body.payout_email && body.payout_email.toLowerCase() !== member.payout_email.toLowerCase()) {
     member.email_changed_at = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
   }
@@ -687,7 +696,11 @@ function patchMember(req: TransportRequest, id: string): TransportResponse {
   return ok(member);
 }
 
-/** `sendKey` is the idempotency_key of the send that went out, like `payroll_runs.idempotency_key`. */
+/**
+ * The payroll run is stateful for the session so the demo can be clicked through:
+ * GET -> exclude Omar -> send (202) -> two GETs say SENT -> the next says PAID.
+ * Kept out of the persisted state on purpose; resetMockState() clears it.
+ * `sendKey` is the idempotency_key of the send that went out, like `payroll_runs.idempotency_key`. */
 let payrollMock: { run: PayrollRunOut | null; sentGets: number; sendKey: string | null } = { run: null, sentGets: 0, sendKey: null };
 /** Like the real backend: an upload waiting for its column mapping blocks run creation (409 MAPPING_REQUIRED). */
 let pendingUploadId: string | null = null;
@@ -734,9 +747,14 @@ function currentRun(): PayrollRunOut | null {
   return payrollMock.run;
 }
 
-function getRun(): TransportResponse {
+function runNotFound(runId: string): TransportResponse {
+  return fail(404, "NOT_FOUND", `Payroll run ${runId} was not found.`);
+}
+
+function getRun(runId: string): TransportResponse {
   const run = currentRun();
   if (!run) return fail(404, "NOT_FOUND", "Fixture payroll_run_awaiting_approval.json is not available.");
+  if (run.run_id !== runId) return runNotFound(runId);
   if (run.status === "SENT") {
     if (payrollMock.sentGets < 2) {
       payrollMock.sentGets += 1;
@@ -748,8 +766,9 @@ function getRun(): TransportResponse {
   return ok(run);
 }
 
-function patchRunLine(req: TransportRequest, lineId: string): TransportResponse {
+function patchRunLine(req: TransportRequest, runId: string, lineId: string): TransportResponse {
   const run = currentRun();
+  if (run && run.run_id !== runId) return runNotFound(runId);
   const action = (req.body as Partial<PayrollLineUpdate> | undefined)?.owner_action;
   if (!run) return fail(404, "NOT_FOUND", "No payroll run is available.");
   if (action !== "APPROVED" && action !== "EXCLUDED") {
@@ -779,11 +798,22 @@ function patchRunLine(req: TransportRequest, lineId: string): TransportResponse 
   } else {
     line.owner_action = action;
   }
+  addDecision({
+    action_type: "PAY_TEAM_MEMBER",
+    subject_type: "payroll_line",
+    subject_id: lineId,
+    decision: action === "APPROVED" ? "ALLOW" : "DENY",
+    rule_ids: ["OWNER"],
+    amount: line.gross,
+    reason: action === "APPROVED" ? `Owner approved ${line.member_name}'s line.` : `Owner excluded ${line.member_name}'s line.`,
+    actor: "owner",
+  });
   return ok(payrollMock.run);
 }
 
-function sendRun(req: TransportRequest): TransportResponse {
+function sendRun(req: TransportRequest, runId: string): TransportResponse {
   const run = currentRun();
+  if (run && run.run_id !== runId) return runNotFound(runId);
   // Like `lines_ready_to_send`: run flags the owner ticked (approve_run_flags) are no longer open.
   const approved = (req.body as { approve_run_flags?: unknown } | null)?.approve_run_flags;
   const ticked = Array.isArray(approved) ? approved.filter((f): f is string => typeof f === "string") : [];
@@ -803,7 +833,8 @@ function sendRun(req: TransportRequest): TransportResponse {
   const openLines = run.lines
     .filter((l) => l.decision === "ASK" && l.owner_action === null)
     .map((l) => ({ line_id: l.line_id, flags: l.flags }));
-  const openFlags = run.run_decision === "ASK" ? run.run_flags.filter((f) => !ticked.includes(f)) : [];
+  // Like `lines_ready_locked`: every run flag the owner didn't tick is open, whatever the run decision.
+  const openFlags = run.run_flags.filter((f) => !ticked.includes(f));
   if (openLines.length > 0 || openFlags.length > 0) {
     return fail(409, "LEASH_ASK_UNRESOLVED", "Some checks still need your decision.", {
       open_asks: openLines,
@@ -910,7 +941,15 @@ const routes: Array<[string, RegExp, Handler]> = [
   ["POST", /^\/leash\/policy\/activate$/, (r) => activatePolicyMock(r)],
   ["GET", /^\/leash\/team$/, () => ok(roster())],
   ["POST", /^\/leash\/team$/, (r) => {
-    const m = { member_id: nextId("tm_"), email_changed_at: null, first_paid_at: null, active: true, ...(r.body as object) } as TeamMemberOut;
+    const body = r.body as Partial<TeamMemberOut>;
+    const m = {
+      member_id: nextId("tm_"),
+      email_changed_at: null,
+      first_paid_at: null,
+      active: true,
+      ...body,
+      payout_email: (body.payout_email ?? "").trim().toLowerCase(),
+    } as TeamMemberOut;
     roster().push(m);
     return ok(m, 201);
   }],
@@ -938,9 +977,9 @@ const routes: Array<[string, RegExp, Handler]> = [
     return ok(run ? [run] : []);
   }],
   ["POST", /^\/leash\/payroll\/runs$/, (r) => createRunMock(r)],
-  ["GET", /^\/leash\/payroll\/runs\/([^/]+)$/, () => getRun()],
-  ["PATCH", /^\/leash\/payroll\/runs\/([^/]+)\/lines\/([^/]+)$/, (r, [, lineId]) => patchRunLine(r, decodeURIComponent(lineId))],
-  ["POST", /^\/leash\/payroll\/runs\/([^/]+)\/send$/, (r) => sendRun(r)],
+  ["GET", /^\/leash\/payroll\/runs\/([^/]+)$/, (_r, [id]) => getRun(decodeURIComponent(id))],
+  ["PATCH", /^\/leash\/payroll\/runs\/([^/]+)\/lines\/([^/]+)$/, (r, [id, lineId]) => patchRunLine(r, decodeURIComponent(id), decodeURIComponent(lineId))],
+  ["POST", /^\/leash\/payroll\/runs\/([^/]+)\/send$/, (r, [id]) => sendRun(r, decodeURIComponent(id))],
   ["POST", /^\/demo\/reset$/, () => {
     resetMockState();
     return ok({ status: "reset" });

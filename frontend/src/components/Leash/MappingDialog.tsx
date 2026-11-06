@@ -2,10 +2,9 @@ import { useMemo, useState } from "react";
 import { Button } from "../common/Button";
 import { Modal } from "../common/Modal";
 import type { ColumnMappingProposal, TimesheetField } from "../../types/contracts";
+import { selectCls } from "./styles";
 import { headerCollision, mappingProblem, TARGETS } from "./mapping";
 
-const select =
-  "h-10 w-full rounded border border-paper-line bg-white px-2 text-[14px] outline-none focus:border-ink";
 
 interface Props {
   open: boolean;
@@ -72,7 +71,7 @@ export default function MappingDialog({ open, headers, proposal, rowCount, busy,
                   <span className="num ml-2 text-[12px] text-ink-muted">{Math.round(conf * 100)}% sure</span>
                 )}
               </label>
-              <select id={id} className={select} value={choice[header] ?? ""} onChange={(e) => pick(header, e.target.value)} aria-describedby={problem && touched ? "map-problem" : undefined}>
+              <select id={id} className={selectCls} value={choice[header] ?? ""} onChange={(e) => pick(header, e.target.value)} aria-describedby={problem && touched ? "map-problem" : undefined}>
                 <option value="">(ignore)</option>
                 {TARGETS.map((t) => (
                   <option key={t.value} value={t.value}>

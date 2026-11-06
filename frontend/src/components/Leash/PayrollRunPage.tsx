@@ -8,6 +8,7 @@ import { DecisionBadge, PayrollBadge, Pill } from "../common/StatusBadge";
 import { centsToString, formatMoney, toCents } from "../../lib/money";
 import type { OwnerAction, PayrollRunOut, PayrollSendResponse } from "../../types/contracts";
 import { activePolicyQuiet, ledgerQuiet, payrollRunQuiet, sendPayrollQuiet, updatePayrollLineQuiet } from "./api";
+import { errorText } from "./format";
 import PayrollRunGrid, { type RunGridRow } from "./PayrollRunGrid";
 import {
   approvableRunFlags,
@@ -24,11 +25,10 @@ import {
 } from "./run";
 
 const POLL_MS = 3000;
-const SOMETHING_WRONG = "Something went wrong. Try again.";
 const UNAVAILABLE = "PayPal didn't confirm. The batch may still go through; this page will keep checking.";
 const NOT_SENT = "PayPal didn't get it. You can try again.";
 
-const message = (e: unknown) => (isApiError(e) ? e.message : SOMETHING_WRONG);
+const message = (e: unknown) => errorText(e);
 
 function Stat({ label, children }: { label: string; children: ReactNode }) {
   return (

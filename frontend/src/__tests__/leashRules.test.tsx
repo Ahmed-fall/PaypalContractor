@@ -281,9 +281,13 @@ describe("Leash Rules screen (WP-5.5)", () => {
         ? { status: 500, body: { error: { code: "INTERNAL", message: "boom", details: null } } }
         : mockTransport(req),
     );
+    const seen: unknown[] = [];
+    const off = on("api-error", (e) => seen.push(e));
     const user = userEvent.setup();
     renderRules();
     expect(await screen.findByText(/Couldn't load the rules\./)).toBeInTheDocument();
+    off();
+    expect(seen).toEqual([]);
     fail = false;
     await user.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByRole("list", { name: "Rule cards" })).toBeInTheDocument();

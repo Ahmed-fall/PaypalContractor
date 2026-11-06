@@ -164,6 +164,14 @@ describe("Leash Payroll home (WP-5.4 UI)", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
+  it("marks milestones with no captured payment as not paid yet", async () => {
+    renderPayroll();
+    const select = await screen.findByLabelText("Milestone");
+    await waitFor(() => expect(within(select).getAllByRole("option").length).toBeGreaterThan(1));
+    // Fresh demo state: nothing has been paid by the simulator yet.
+    expect(within(select).getByRole("option", { name: /Phase 1.*\(not paid yet\)/ })).toBeInTheDocument();
+  });
+
   it("prepare navigates to the run", async () => {
     const calls = spyTransport();
     const user = userEvent.setup();

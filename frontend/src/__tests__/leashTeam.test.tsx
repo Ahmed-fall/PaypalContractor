@@ -32,9 +32,70 @@ describe("Leash Team screen (WP-5.5)", () => {
     renderTeam();
     const grid = await screen.findByRole("region", { name: "Team members" });
     expect(await within(grid).findByText("Omar")).toBeInTheDocument();
-    expect(within(grid).getByText("sb***@personal.example.com")).toBeInTheDocument();
+    expect(within(grid).getAllByText("sb***@personal.example.com")).toHaveLength(3);
+    expect(within(grid).getByText("Sara")).toBeInTheDocument();
+    expect(within(grid).getByText("Youssef")).toBeInTheDocument();
     expect(within(grid).queryByText("sb-omar.new@personal.example.com")).not.toBeInTheDocument();
-    expect(within(grid).getByText("$25.00")).toBeInTheDocument();
+    expect(within(grid).getAllByText("$25.00")).toHaveLength(2);
+    expect(within(grid).getByText("$22.00")).toBeInTheDocument();
+  });
+
+  it("a failed load shows an inline retry and no toast", async () => {
+    let fail = true;
+    setTransport(async (req) =>
+      fail && req.method === "GET" && req.path === "/leash/team"
+        ? { status: 500, body: { error: { code: "INTERNAL", message: "boom", details: null, request_id: "r" } } }
+        : mockTransport(req),
+    );
+    const toast = vi.fn();
+    const off = on("api-error", toast);
+    const user = userEvent.setup();
+    renderTeam();
+    expect(await screen.findByText(/Couldn't load the team\./)).toBeInTheDocument();
+    expect(toast).not.toHaveBeenCalled();
+    off();
+    fail = false;
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("Omar")).toBeInTheDocument();
+    expect(screen.queryByText(/Couldn't load the team\./)).not.toBeInTheDocument();
+  });
+
+  it("a 422 shows the server's field messages, or a plain fallback", async () => {
+    let details: unknown = { fields: [{ field: "body.hourly_rate", msg: "Rate must be a positive amount." }] };
+    setTransport(async (req) =>
+      req.method === "POST"
+        ? { status: 422, body: { error: { code: "VALIDATION_ERROR", message: "Invalid request.", details, request_id: "r" } } }
+        : mockTransport(req),
+    );
+    const user = userEvent.setup();
+    renderTeam();
+    await screen.findByText("Omar");
+    await user.type(screen.getByLabelText("Name"), "Nadia");
+    await user.type(screen.getByLabelText("Payout email"), "nadia@personal.example.com");
+    await user.type(screen.getByLabelText("Hourly rate"), "12.50");
+    await user.click(screen.getByRole("button", { name: "Add member" }));
+    expect(await screen.findByText("Rate must be a positive amount.")).toBeInTheDocument();
+    details = null;
+    await user.click(screen.getByRole("button", { name: "Add member" }));
+    expect(await screen.findByText("Check the name, email and rate.")).toBeInTheDocument();
+  });
+
+  it("refuses a rate above 999999.99", async () => {
+    const user = userEvent.setup();
+    renderTeam();
+    await screen.findByText("Omar");
+    await user.type(screen.getByLabelText("Name"), "Nadia");
+    await user.type(screen.getByLabelText("Payout email"), "nadia@personal.example.com");
+    await user.type(screen.getByLabelText("Hourly rate"), "1000000.00");
+    await user.click(screen.getByRole("button", { name: "Add member" }));
+    expect(await screen.findByText("Enter the rate in dollars and cents, like 25.00.")).toBeInTheDocument();
+  });
+
+  it("the mock trims and lowercases payout emails", async () => {
+    const added = await api.addTeamMember({ name: "Nadia", payout_email: "  Nadia@Personal.Example.com ", hourly_rate: "12.50" });
+    expect(added.payout_email).toBe("nadia@personal.example.com");
+    const patched = await api.updateTeamMember(added.member_id, { payout_email: " NEW@Personal.Example.com" });
+    expect(patched.payout_email).toBe("new@personal.example.com");
   });
 
   it("email change shows the PR-01 warning before saving", async () => {
@@ -183,9 +244,11 @@ describe("Leash format helpers", () => {
       ["PR-03", "First payment"],
       ["PR-04", "Rate differs from roster"],
       ["PR-05", "Unknown or duplicate"],
-      ["PR-06", "Over 80% of cash received"],
+      ["PR-06", "Over the cash-used limit"],
       ["PR-07", "Already paid"],
-      ["DEFAULT", "Not checked yet"],
+      ["DEFAULT", "Leash couldn't check this line yet"],
+      ["OWNER", "Your decision"],
+      ["PAYROLL-CHECKS", "Payroll checks"],
       ["XYZ-9", "XYZ-9"],
     ];
     for (const [id, label] of table) expect(flagLabel(id)).toBe(label);

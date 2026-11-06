@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { api, isApiError } from "../../api/client";
+import { isApiError } from "../../api/client";
 import { Button } from "../common/Button";
 import { Card, PageHeader } from "../common/Card";
 import { Pill } from "../common/StatusBadge";
 import { formatDateTime } from "../../lib/dates";
 import type { ActiveLeashPolicy, LeashPolicy, PolicyCompileResponse } from "../../types/contracts";
-import { activatePolicyQuiet, compilePolicyQuiet, savePolicyDraft } from "./api";
+import { errorText } from "./format";
+import { inputCls } from "./styles";
+import { activatePolicyQuiet, activePolicyQuiet, compilePolicyQuiet, savePolicyDraft } from "./api";
 import {
   describeRule,
   formFromPolicy,
@@ -16,8 +18,6 @@ import {
 } from "./rules";
 
 const COMPILER_UNAVAILABLE = "The AI rule writer isn't available yet. Use the form below.";
-const input =
-  "h-10 w-full rounded border border-paper-line bg-white px-3 text-[14px] outline-none placeholder:text-ink-muted focus:border-ink";
 
 /** Server 422 field names -> the form field they belong to. */
 const SERVER_FIELD: Record<string, keyof RulesForm> = {
@@ -26,7 +26,7 @@ const SERVER_FIELD: Record<string, keyof RulesForm> = {
 };
 
 function serverFieldErrors(e: unknown): { fields: RulesFormErrors; general: string | null } {
-  if (!isApiError(e)) return { fields: {}, general: "Something went wrong. Try again." };
+  if (!isApiError(e)) return { fields: {}, general: errorText(e) };
   const fields: RulesFormErrors = {};
   const list = (e.details as { fields?: unknown } | null)?.fields;
   let general: string | null = null;
@@ -45,7 +45,7 @@ function serverFieldErrors(e: unknown): { fields: RulesFormErrors; general: stri
 
 /** Plain words for the 409s activation can answer with. */
 function activateMessage(e: unknown): string {
-  if (!isApiError(e)) return "Something went wrong. Try again.";
+  if (!isApiError(e)) return errorText(e);
   if (e.code === "POLICY_VERSION_CONFLICT") return "Another version was just activated. Reload to see it.";
   if (e.code === "POLICY_DRAFT_NOT_FOUND") return "That draft is gone. Preview again.";
   return e.message;
@@ -95,7 +95,7 @@ function Field({
       </label>
       <input
         id={id}
-        className={`${input} num`}
+        className={`${inputCls} num`}
         inputMode={inputMode}
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -137,7 +137,7 @@ export default function RulesPage() {
   const [reloadFailed, setReloadFailed] = useState(false);
 
   const load = useCallback(async () => {
-    const policy = await api.activePolicy();
+    const policy = await activePolicyQuiet();
     setActive(policy);
     return policy;
   }, []);
@@ -196,7 +196,7 @@ export default function RulesPage() {
       setActivateError(null);
     } catch (err) {
       if (isApiError(err) && (err.status === 501 || err.code === "COMPILER_UNAVAILABLE")) setCompileMsg(COMPILER_UNAVAILABLE);
-      else setCompileMsg(isApiError(err) ? err.message : "Something went wrong. Try again.");
+      else setCompileMsg(errorText(err));
     } finally {
       setCompiling(false);
     }

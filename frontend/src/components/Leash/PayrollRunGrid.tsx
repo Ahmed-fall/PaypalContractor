@@ -117,7 +117,7 @@ function ActionsCell({ data, context }: Cell) {
 const money = (field: "rate" | "gross"): ColDef<RunGridRow> => ({
   colId: field,
   headerName: field === "rate" ? "Rate" : "Gross",
-  width: 110,
+  width: field === "rate" ? 80 : 90,
   type: "rightAligned",
   headerClass: "ag-right-aligned-header",
   cellClass: "num",
@@ -140,15 +140,23 @@ export default function PayrollRunGrid({
       {
         colId: "member",
         headerName: "Member",
-        width: 130,
+        width: 195,
+        pinned: "left",
+        autoHeight: true,
         valueGetter: (p) => p.data?.member_name ?? "",
+        cellRenderer: ({ data }: Cell) =>
+          data ? (
+            <span className="flex flex-col py-1 leading-snug">
+              <span>{data.member_name}</span>
+              <span className="text-[12px] text-ink-muted">{maskEmail(data.payout_email)}</span>
+            </span>
+          ) : null,
         cellClassRules: { "fd-flag": (p) => Boolean(p.data && !p.data.locked && (p.data.attention || isOpenAsk(p.data))) },
       },
-      { colId: "email", headerName: "Payout email", width: 220, valueGetter: (p) => (p.data ? maskEmail(p.data.payout_email) : "") },
       {
         colId: "hours",
         headerName: "Hours",
-        width: 90,
+        width: 65,
         type: "rightAligned",
         headerClass: "ag-right-aligned-header",
         cellClass: "num",
@@ -159,14 +167,14 @@ export default function PayrollRunGrid({
       {
         colId: "decision",
         headerName: "Leash",
-        width: 150,
+        width: 135,
         valueGetter: (p) => p.data?.decision ?? "",
         cellRenderer: ({ data }: Cell) => (data ? <DecisionBadge decision={data.decision} /> : null),
       },
       {
         colId: "flags",
         headerName: "Checks",
-        width: 220,
+        width: 160,
         wrapText: true,
         autoHeight: true,
         valueGetter: (p) => (p.data ? p.data.flags.join(" ") : ""),
@@ -176,16 +184,16 @@ export default function PayrollRunGrid({
         colId: "reason",
         headerName: "Why",
         flex: 1,
-        minWidth: 240,
+        minWidth: 180,
         wrapText: true,
         autoHeight: true,
-        cellClass: "leading-snug py-2",
+        
         valueGetter: (p) => p.data?.reason ?? "",
       },
       {
         colId: "owner",
         headerName: "Your decision",
-        width: 170,
+        width: 120,
         valueGetter: (p) => (p.data ? `${p.data.owner_action ?? ""}|${p.data.attention}|${p.data.locked}` : ""),
         cellRenderer: OwnerCell,
       },
@@ -193,7 +201,7 @@ export default function PayrollRunGrid({
         colId: "payout",
         headerName: "PayPal",
         valueGetter: (p) => (p.data ? payoutLabel(p.data.payout_status) : ""),
-        width: 180,
+        width: 105,
         wrapText: true,
         autoHeight: true,
         cellRenderer: ({ data }: Cell) =>
@@ -209,7 +217,8 @@ export default function PayrollRunGrid({
       {
         colId: "actions",
         headerName: "Actions",
-        width: 230,
+        width: 190,
+        pinned: "right",
         sortable: false,
         autoHeight: true,
         valueGetter: (p) =>

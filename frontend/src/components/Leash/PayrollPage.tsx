@@ -16,14 +16,14 @@ import type {
   TimesheetParsed,
 } from "../../types/contracts";
 import { confirmTimesheetMappingQuiet, createPayrollRunQuiet, discardTimesheet, ledgerQuiet, listPayrollRuns, uploadTimesheetQuiet } from "./api";
+import { errorText } from "./format";
+import { selectCls } from "./styles";
 import MappingDialog from "./MappingDialog";
 
 const MAX_BYTES = 2 * 1024 * 1024;
 const TOO_BIG = "This timesheet is larger than 2 MB.";
-const SOMETHING_WRONG = "Something went wrong. Try again.";
 const fileInput =
   "block w-full text-[14px] text-ink file:mr-3 file:h-10 file:rounded file:border file:border-paper-line file:bg-white file:px-4 file:text-[14px]";
-const selectCls = "h-10 w-full rounded border border-paper-line bg-white px-2 text-[14px] outline-none focus:border-ink";
 
 interface UploadProblem {
   message: string;
@@ -32,7 +32,7 @@ interface UploadProblem {
 
 /** 413/415/422/409 from the upload routes, in words, with the bad rows when the server lists them (details.rows). */
 function uploadProblem(e: unknown): UploadProblem {
-  if (!isApiError(e)) return { message: SOMETHING_WRONG, rows: [] };
+  if (!isApiError(e)) return { message: errorText(e), rows: [] };
   const raw = (e.details as { rows?: unknown } | null)?.rows;
   const rows: UploadProblem["rows"] = [];
   if (Array.isArray(raw)) {
@@ -78,7 +78,8 @@ const STATUS_LABEL: Record<PayrollRunStatus, string> = {
 };
 
 function describeMilestone(r: LedgerRow): string {
-  return `${r.milestone_code} - ${r.milestone_title} (${r.contract_title})`;
+  const unpaid = r.captured_amount === null ? " (not paid yet)" : "";
+  return `${r.milestone_code} - ${r.milestone_title} (${r.contract_title})${unpaid}`;
 }
 
 interface GridContext {
@@ -226,7 +227,7 @@ export default function PayrollPage() {
         const id = uploadIdOf(err);
         if (id) setStale({ id, where: "prepare" });
       } else if (isApiError(err) && err.status === 404) setPrepareError("No timesheet hours for this milestone yet.");
-      else setPrepareError(isApiError(err) ? err.message : SOMETHING_WRONG);
+      else setPrepareError(errorText(err));
       preparingRef.current = false;
       setPreparing(false);
     }
