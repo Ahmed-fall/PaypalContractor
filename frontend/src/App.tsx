@@ -10,7 +10,7 @@ import ContractsPage from "./pages/ContractsPage";
 import ContractWorkbenchPage from "./pages/ContractWorkbenchPage";
 import SimulatorPage from "./pages/SimulatorPage";
 import LedgerPage from "./pages/LedgerPage";
-import LeashPlaceholder from "./pages/LeashPlaceholder";
+import { DecisionsPage, PayrollPage, PayrollRunPage, RulesPage, TeamPage } from "./components/Leash";
 import NotFound from "./pages/NotFound";
 
 const DETECTIVE_NAV = [
@@ -126,11 +126,11 @@ export default function App() {
             <Route path="/contracts/:contractId" element={<ContractWorkbenchPage />} />
             <Route path="/simulator" element={<SimulatorPage />} />
             <Route path="/ledger" element={<LedgerPage />} />
-            <Route path="/leash/rules" element={<LeashPlaceholder title="Rules" route="/leash/rules" />} />
-            <Route path="/leash/team" element={<LeashPlaceholder title="Team" route="/leash/team" />} />
-            <Route path="/leash/payroll" element={<LeashPlaceholder title="Payroll" route="/leash/payroll" />} />
-            <Route path="/leash/payroll/:runId" element={<LeashPlaceholder title="Payroll run" route="/leash/payroll/:runId" />} />
-            <Route path="/leash/decisions" element={<LeashPlaceholder title="Decisions" route="/leash/decisions" />} />
+            <Route path="/leash/rules" element={<RulesPage />} />
+            <Route path="/leash/team" element={<TeamPage />} />
+            <Route path="/leash/payroll" element={<PayrollPage />} />
+            <Route path="/leash/payroll/:runId" element={<PayrollRunPage />} />
+            <Route path="/leash/decisions" element={<DecisionsPage />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </main>
