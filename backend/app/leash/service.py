@@ -16,6 +16,7 @@ import importlib.util
 import inspect
 import logging
 import math
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -154,9 +155,7 @@ class LeashService:
         if self._explainer is None:
             return fallback
         use_llm = action in PAYROLL_ACTIONS and decision != LeashDecision.ALLOW
-        timeout = (
-            self._timeout if use_llm else min(self._timeout, TEMPLATE_PATH_TIMEOUT_S)
-        )
+        timeout = self._timeout if use_llm else min(self._timeout, TEMPLATE_PATH_TIMEOUT_S)
         try:
             text = await asyncio.wait_for(
                 self._explainer(
@@ -225,8 +224,7 @@ def _matches_contract(fn: Any) -> bool:
         p.kind is inspect.Parameter.VAR_KEYWORD
         or (
             p.name == "use_llm"
-            and p.kind
-            in (inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+            and p.kind in (inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
         )
         for p in params
     )
@@ -260,18 +258,42 @@ def configure(service: LeashService) -> None:
     _service = service
 
 
+_default: LeashService | None = None
+_default_lock = threading.Lock()
+
+
+def _build_default_service() -> LeashService:
+    """SQL-backed when the DB package is importable, else the in-memory pair.
+
+    Imports are lazy so merely importing ``backend.app.leash`` never builds an engine.
+    Only a missing db package (ImportError) falls back; settings or DB errors propagate.
+    """
+    try:
+        from ..db.database import Base, engine
+        from . import models
+        from .store import SqlDecisionLog, SqlPolicyProvider
+    except ImportError:
+        logger.warning("leash: DB package not importable; using in-memory policy and log")
+        return LeashService(
+            StaticPolicyProvider(default_policy()),
+            InMemoryDecisionLog(),
+            explainer=_load_explainer(),
+        )
+    # Backup for db.init_db(), which does not import the Leash models.
+    Base.metadata.create_all(engine, tables=models.LEASH_TABLES, checkfirst=True)
+    return LeashService(SqlPolicyProvider(), SqlDecisionLog(), explainer=_load_explainer())
+
+
 def _default_service() -> LeashService:
-    return LeashService(
-        StaticPolicyProvider(default_policy()),
-        InMemoryDecisionLog(),
-        explainer=_load_explainer(),
-    )
+    """The process-wide default service, built once (double-checked locking)."""
+    global _default
+    if _default is None:
+        with _default_lock:
+            if _default is None:
+                _default = _build_default_service()
+    return _default
 
 
-async def decide(
-    action: GuardAction, facts: dict[str, Any], subject_id: str
-) -> GuardResult:
-    global _service
-    if _service is None:
-        _service = _default_service()
-    return await _service.decide(action, facts, subject_id)
+async def decide(action: GuardAction, facts: dict[str, Any], subject_id: str) -> GuardResult:
+    service = _service if _service is not None else _default_service()
+    return await service.decide(action, facts, subject_id)

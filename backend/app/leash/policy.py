@@ -20,8 +20,7 @@ _G05 = LeashRule(
 BUILTIN_RULES: tuple[LeashRule, ...] = (_G05,)
 
 _CLEAR_CONTRACT_TEXT = (
-    "Send correction invoices on my own if they are $250 or less "
-    "and the contract is clear."
+    "Send correction invoices on my own if they are $250 or less and the contract is clear."
 )
 
 

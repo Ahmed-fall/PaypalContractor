@@ -25,9 +25,7 @@ def test_build_batch_shape() -> None:
         "USD",
     )
     assert body["sender_batch_header"]["sender_batch_id"] == f"fd-l1-{RUN}"
-    assert (
-        body["sender_batch_header"]["email_subject"] == "Leash L1 sandbox payout test"
-    )
+    assert body["sender_batch_header"]["email_subject"] == "Leash L1 sandbox payout test"
     items = body["items"]
     assert len(items) == 2
     assert all(i["recipient_type"] == "EMAIL" for i in items)
@@ -232,9 +230,7 @@ async def test_happy_path_passes_all_checks() -> None:
     client, _, sleeper, http = _make()
     async with http, respx.mock(base_url=BASE) as router:
         post = _mock_happy(router)
-        result = await payouts_l1.run_l1(
-            client, RECIPIENTS, Decimal("1.00"), "USD", RUN
-        )
+        result = await payouts_l1.run_l1(client, RECIPIENTS, Decimal("1.00"), "USD", RUN)
     assert result.ok, [c for c in result.checks if not c.passed]
     assert sleeper.calls == [10]
     first, second = (c.request.headers["paypal-request-id"] for c in post.calls)
@@ -268,9 +264,7 @@ async def test_resend_accepted_fails_double_pay_check() -> None:
                 ),
             ]
         )
-        result = await payouts_l1.run_l1(
-            client, RECIPIENTS, Decimal("1.00"), "USD", RUN
-        )
+        result = await payouts_l1.run_l1(client, RECIPIENTS, Decimal("1.00"), "USD", RUN)
     dup = _check(result, "duplicate_batch_rejected")
     assert not dup.passed
     assert "DOUBLE PAY" in dup.detail
@@ -288,9 +282,7 @@ async def test_poll_stops_after_120_seconds() -> None:
         router.get(f"/v1/payments/payouts/{BATCH_ID}").mock(
             return_value=httpx.Response(200, json=_batch("PROCESSING", "PENDING"))
         )
-        result = await payouts_l1.run_l1(
-            client, RECIPIENTS, Decimal("1.00"), "USD", RUN
-        )
+        result = await payouts_l1.run_l1(client, RECIPIENTS, Decimal("1.00"), "USD", RUN)
     assert sleeper.calls == [10] * 12
     assert not _check(result, "batch_success").passed
     assert "PROCESSING" in _check(result, "batch_success").detail
@@ -305,9 +297,7 @@ async def test_unclaimed_item_is_terminal_and_fails() -> None:
         router.get(f"/v1/payments/payouts/{BATCH_ID}").mock(
             return_value=httpx.Response(200, json=_batch("SUCCESS", "UNCLAIMED"))
         )
-        result = await payouts_l1.run_l1(
-            client, RECIPIENTS, Decimal("1.00"), "USD", RUN
-        )
+        result = await payouts_l1.run_l1(client, RECIPIENTS, Decimal("1.00"), "USD", RUN)
     assert sleeper.calls == []
     items = _check(result, "items_success")
     assert not items.passed
@@ -353,9 +343,7 @@ async def test_5xx_retries_with_same_request_id() -> None:
 async def test_timeout_retries_then_raises() -> None:
     client, _, sleeper, http = _make()
     async with http, respx.mock(base_url=BASE) as router:
-        post = router.post("/v1/payments/payouts").mock(
-            side_effect=httpx.ReadTimeout("slow")
-        )
+        post = router.post("/v1/payments/payouts").mock(side_effect=httpx.ReadTimeout("slow"))
         with pytest.raises(httpx.ReadTimeout):
             await client.create_batch({"x": 1}, "req-3")
     assert post.call_count == 3
@@ -369,9 +357,7 @@ async def test_400_is_not_retried() -> None:
         post = router.post("/v1/payments/payouts").mock(
             return_value=httpx.Response(400, json={"name": "VALIDATION_ERROR"})
         )
-        result = await payouts_l1.run_l1(
-            client, RECIPIENTS, Decimal("1.00"), "USD", RUN
-        )
+        result = await payouts_l1.run_l1(client, RECIPIENTS, Decimal("1.00"), "USD", RUN)
     assert post.call_count == 1
     assert sleeper.calls == []
     assert not result.ok
@@ -387,9 +373,7 @@ async def test_webhook_lookup_failure_is_not_fatal() -> None:
         router.get("/v1/notifications/webhooks-events").mock(
             return_value=httpx.Response(403, json={"name": "NOT_AUTHORIZED"})
         )
-        result = await payouts_l1.run_l1(
-            client, RECIPIENTS, Decimal("1.00"), "USD", RUN
-        )
+        result = await payouts_l1.run_l1(client, RECIPIENTS, Decimal("1.00"), "USD", RUN)
     assert result.ok
     assert "webhook_item_succeeded" not in result.payloads
 
@@ -457,9 +441,7 @@ async def test_save_fixtures_writes_redacted_files(
         text = f.read_text(encoding="utf-8")
         assert text.endswith("\n")
         assert not any(email in text for email in RECIPIENTS)
-    final = (tmp_path / "paypal" / "payouts_batch_final.json").read_text(
-        encoding="utf-8"
-    )
+    final = (tmp_path / "paypal" / "payouts_batch_final.json").read_text(encoding="utf-8")
     assert "sb-member1@personal.example.com" in final
 
 
@@ -475,9 +457,7 @@ def _mock_post_then_dup(router: respx.MockRouter) -> None:
             httpx.Response(400, json=DUP_BODY),
         ]
     )
-    router.get(f"/v1/payments/payouts/{BATCH_ID}").mock(
-        return_value=httpx.Response(500)
-    )
+    router.get(f"/v1/payments/payouts/{BATCH_ID}").mock(return_value=httpx.Response(500))
     router.get("/v1/notifications/webhooks-events").mock(
         return_value=httpx.Response(200, json={"events": []})
     )
@@ -490,9 +470,7 @@ async def test_step_failure_after_create_keeps_ids(
     client, _, _, http = _make()
     async with http, respx.mock(base_url=BASE) as router:
         _mock_post_then_dup(router)
-        result = await payouts_l1.run_l1(
-            client, RECIPIENTS, Decimal("1.00"), "USD", RUN
-        )
+        result = await payouts_l1.run_l1(client, RECIPIENTS, Decimal("1.00"), "USD", RUN)
     out = capsys.readouterr().out
     assert f"fd-l1-{RUN}" in out
     assert BATCH_ID in out
@@ -531,9 +509,7 @@ async def test_first_post_timeouts_print_reconcile_line(
     client, _, _, http = _make()
     async with http, respx.mock(base_url=BASE) as router:
         router.post("/v1/payments/payouts").mock(side_effect=httpx.ReadTimeout("x"))
-        result = await payouts_l1.run_l1(
-            client, RECIPIENTS, Decimal("1.00"), "USD", RUN
-        )
+        result = await payouts_l1.run_l1(client, RECIPIENTS, Decimal("1.00"), "USD", RUN)
     out = capsys.readouterr().out
     assert "batch may exist at PayPal: reconcile sender_batch_id" in out
     assert f"fd-l1-{RUN}" in out
@@ -578,9 +554,7 @@ async def test_duplicate_rejected_for_other_reason_fails() -> None:
                 ),
             ]
         )
-        result = await payouts_l1.run_l1(
-            client, RECIPIENTS, Decimal("1.00"), "USD", RUN
-        )
+        result = await payouts_l1.run_l1(client, RECIPIENTS, Decimal("1.00"), "USD", RUN)
     dup = _check(result, "duplicate_batch_rejected")
     assert not dup.passed
     assert "rejected for another reason: INSUFFICIENT_FUNDS" in dup.detail
@@ -625,9 +599,7 @@ def test_save_fixtures_backstop_removes_third_party_emails(tmp_path: Path) -> No
 @pytest.mark.asyncio
 async def test_cli_amount_cap_and_duplicate_recipients() -> None:
     with pytest.raises(SystemExit) as over:
-        await payouts_l1.main(
-            ["--to", "a@x.com", "--to", "b@x.com", "--amount", "10.01"]
-        )
+        await payouts_l1.main(["--to", "a@x.com", "--to", "b@x.com", "--amount", "10.01"])
     assert over.value.code == 2
     with pytest.raises(SystemExit) as same:
         await payouts_l1.main(["--to", "a@x.com", "--to", " A@X.com "])

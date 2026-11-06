@@ -61,19 +61,9 @@ def _facts(rng: random.Random) -> dict[str, Any]:
 
 
 def _money_ok(v: Any) -> Decimal | None:
-    if (
-        isinstance(v, Decimal)
-        and v.is_finite()
-        and v >= 0
-        and v.as_tuple().exponent == -2
-    ):
+    if isinstance(v, Decimal) and v.is_finite() and v >= 0 and v.as_tuple().exponent == -2:
         return v
-    if (
-        isinstance(v, str)
-        and len(v) >= 4
-        and v[-3] == "."
-        and v.replace(".", "", 1).isdigit()
-    ):
+    if isinstance(v, str) and len(v) >= 4 and v[-3] == "." and v.replace(".", "", 1).isdigit():
         return Decimal(v)
     return None
 
@@ -89,9 +79,7 @@ def _days_ok(facts: dict[str, Any]) -> bool:
     if "days_since_last_client_invoice" not in facts:
         return False
     days = facts["days_since_last_client_invoice"]
-    return days is None or (
-        isinstance(days, int) and not isinstance(days, bool) and days >= 0
-    )
+    return days is None or (isinstance(days, int) and not isinstance(days, bool) and days >= 0)
 
 
 def _all_valid(f: dict[str, Any]) -> bool:
@@ -115,10 +103,7 @@ def _oracle_allows(f: dict[str, Any]) -> bool:
     assert amount is not None and conf is not None
     if amount > Decimal("250.00") or conf < Decimal("0.9"):
         return False
-    if (
-        f["has_clause_quote"] is not True
-        or f["line_items_match_decimal_total"] is not True
-    ):
+    if f["has_clause_quote"] is not True or f["line_items_match_decimal_total"] is not True:
         return False
     if "never_auto_contact" in f["client_tags"]:
         return False
@@ -191,3 +176,83 @@ async def test_unknown_facts_never_allow() -> None:
 
     await _run(check)
     assert unknown_seen > 0
+
+
+class _S(str):
+    """A str subclass: never acceptable, whatever its value."""
+
+
+_FLAG_POOL = ["PR-01", "PR-1", "pr-01", "PR-08", " PR-01", "PR-07", "PR-00", "G-01"]
+_DECISIONS: list[Any] = [
+    "ALLOW", "allow", "ASK", "DENY", " ALLOW", True, 1, None,
+    LeashDecision.ALLOW, LeashDecision.ASK, _S("ALLOW"), _S("ASK"),
+]  # fmt: skip
+_PAYROLL = (GuardAction.PAY_TEAM_MEMBER, GuardAction.SEND_PAYROLL_BATCH)
+
+
+def _garbage_check(rng: random.Random, depth: int = 0) -> Any:
+    roll = rng.random()
+    if roll < 0.15:
+        return rng.choice([None, True, 0, 1.5, "ALLOW", [], (), object()])
+    if roll < 0.3 and depth < 2:
+        return {
+            "decision": _garbage_check(rng, depth + 1),
+            "flags": _garbage_check(rng, depth + 1),
+        }
+    check: dict[str, Any] = {
+        "decision": rng.choice(_DECISIONS),
+        "flags": rng.choice([list, tuple])(rng.sample(_FLAG_POOL, rng.randint(0, 2))),
+    }
+    roll = rng.random()
+    if roll < 0.15 and check["flags"]:  # duplicate flags
+        check["flags"] = [*check["flags"], check["flags"][0]]
+    elif roll < 0.3:  # str-subclass flag
+        check["flags"] = [_S("PR-01")]
+    if rng.random() < 0.1:
+        check["extra"] = 1
+    return check
+
+
+def _is_exact_allow(check: Any) -> bool:
+    return (
+        type(check) is dict
+        and set(check) == {"decision", "flags"}
+        and (
+            check["decision"] is LeashDecision.ALLOW
+            or (type(check["decision"]) is str and check["decision"] == "ALLOW")
+        )
+        and type(check["flags"]) in (list, tuple)
+        and len(check["flags"]) == 0
+    )
+
+
+def test_garbage_payroll_check_never_yields_allow() -> None:
+    from backend.app.schemas.contracts import LeashRule
+
+    rng = random.Random(20261105)
+    allows = tightened = 0
+    for i in range(ITERATIONS):
+        action = _PAYROLL[i % 2]
+        check = _garbage_check(rng)
+        policy = default_policy()
+        if rng.random() < 0.25:
+            outcome = rng.choice([LeashDecision.ASK, LeashDecision.DENY])
+            policy.rules.append(
+                LeashRule(
+                    id="P-1", applies_to=action, when={}, outcome=outcome,
+                    source_text="t",
+                )
+            )  # fmt: skip
+        decision, ids = evaluate_rules(policy, action, {"payroll_check": check})
+        extra = any(r.applies_to == action for r in policy.rules)
+        if decision == LeashDecision.ALLOW:
+            allows += 1
+            assert _is_exact_allow(check), check
+            assert not extra
+            assert ids == ["PAYROLL-CHECKS"]
+        elif _is_exact_allow(check):
+            tightened += 1
+            assert extra
+            assert decision in (LeashDecision.ASK, LeashDecision.DENY)
+    assert allows > 0
+    assert tightened > 0

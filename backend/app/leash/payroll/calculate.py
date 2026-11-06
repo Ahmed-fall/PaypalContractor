@@ -16,10 +16,15 @@ from decimal import ROUND_HALF_UP, Decimal
 from ..roster import InMemoryRoster, TeamMember
 from .timesheet import TimesheetEntry
 
-_CENT = Decimal("0.01")
+CENT = Decimal("0.01")
 _ZERO = Decimal("0.00")
 _PCT_CAP = Decimal("999.99")
 _MILESTONE_CODE = re.compile(r"([A-Z]+)-(\d+)", re.ASCII)
+
+
+def money(value: Decimal) -> str:
+    """A 2-dp money string (ROUND_HALF_UP) for facts, PayPal bodies and JSON."""
+    return format(value.quantize(CENT, rounding=ROUND_HALF_UP), "f")
 
 
 def milestone_key(code: str) -> tuple[str, int]:
@@ -77,7 +82,7 @@ def build_lines(
             if any(e.hours <= 0 for e in group):
                 gross = _ZERO
             else:
-                gross = (hours * rate).quantize(_CENT, rounding=ROUND_HALF_UP)
+                gross = (hours * rate).quantize(CENT, rounding=ROUND_HALF_UP)
             display = member.name
         lines.append(
             DraftLine(
@@ -114,5 +119,5 @@ def cash_used_pct(total: Decimal, cash_in: Decimal) -> Decimal:
         return _ZERO
     if cash_in <= 0:
         return _PCT_CAP
-    pct = (total / cash_in * 100).quantize(_CENT, rounding=ROUND_HALF_UP)
+    pct = (total / cash_in * 100).quantize(CENT, rounding=ROUND_HALF_UP)
     return min(pct, _PCT_CAP)

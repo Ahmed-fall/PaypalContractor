@@ -55,9 +55,7 @@ def rule(
     outcome: LeashDecision,
     action: GuardAction = INVOICE,
 ) -> LeashRule:
-    return LeashRule(
-        id=rule_id, applies_to=action, when=when, outcome=outcome, source_text="t"
-    )
+    return LeashRule(id=rule_id, applies_to=action, when=when, outcome=outcome, source_text="t")
 
 
 def policy_of(*rules: LeashRule) -> LeashPolicy:
@@ -75,9 +73,7 @@ DEFAULT = [DEFAULT_RULE_ID]
 # (policy | None for default, action, facts, expected decision, expected ids)
 CASES = [
     pytest.param(None, INVOICE, facts(), ALLOW, G01, id="base-allow"),
-    pytest.param(
-        None, INVOICE, facts(amount="300.00"), ASK, ["G-02"], id="over-250-ask"
-    ),
+    pytest.param(None, INVOICE, facts(amount="300.00"), ASK, ["G-02"], id="over-250-ask"),
     pytest.param(
         None,
         INVOICE,
@@ -87,12 +83,8 @@ CASES = [
         id="never-auto-contact-ask",
     ),
     pytest.param(None, INVOICE, facts(amount="250.00"), ALLOW, G01, id="amount-250"),
-    pytest.param(
-        None, INVOICE, facts(amount="250.01"), ASK, ["G-02"], id="amount-250-01"
-    ),
-    pytest.param(
-        None, INVOICE, facts(extraction_confidence=0.90), ALLOW, G01, id="conf-0.90"
-    ),
+    pytest.param(None, INVOICE, facts(amount="250.01"), ASK, ["G-02"], id="amount-250-01"),
+    pytest.param(None, INVOICE, facts(extraction_confidence=0.90), ALLOW, G01, id="conf-0.90"),
     pytest.param(
         None,
         INVOICE,
@@ -101,9 +93,7 @@ CASES = [
         DEFAULT,
         id="conf-0.89",
     ),
-    pytest.param(
-        None, INVOICE, facts(has_clause_quote=False), ASK, DEFAULT, id="no-quote"
-    ),
+    pytest.param(None, INVOICE, facts(has_clause_quote=False), ASK, DEFAULT, id="no-quote"),
     pytest.param(
         None,
         INVOICE,
@@ -182,12 +172,8 @@ CASES = [
         DEFAULT,
         id="missing-confidence",
     ),
-    pytest.param(
-        None, INVOICE, without("has_clause_quote"), ASK, DEFAULT, id="missing-quote"
-    ),
-    pytest.param(
-        None, INVOICE, without("client_tags"), ASK, ["G-03"], id="missing-tags"
-    ),
+    pytest.param(None, INVOICE, without("has_clause_quote"), ASK, DEFAULT, id="missing-quote"),
+    pytest.param(None, INVOICE, without("client_tags"), ASK, ["G-03"], id="missing-tags"),
     pytest.param(
         None,
         INVOICE,
@@ -206,12 +192,8 @@ CASES = [
     ),
     # wrong types
     pytest.param(None, INVOICE, facts(amount=200.0), ASK, ["G-02"], id="amount-float"),
-    pytest.param(
-        None, INVOICE, facts(amount="200"), ASK, ["G-02"], id="amount-not-2dp"
-    ),
-    pytest.param(
-        None, INVOICE, facts(amount="abc"), ASK, ["G-02"], id="amount-garbage"
-    ),
+    pytest.param(None, INVOICE, facts(amount="200"), ASK, ["G-02"], id="amount-not-2dp"),
+    pytest.param(None, INVOICE, facts(amount="abc"), ASK, ["G-02"], id="amount-garbage"),
     pytest.param(
         None,
         INVOICE,
@@ -236,9 +218,7 @@ CASES = [
         ["G-03"],
         id="tags-str",
     ),
-    pytest.param(
-        None, INVOICE, facts(has_clause_quote="yes"), ASK, DEFAULT, id="quote-str"
-    ),
+    pytest.param(None, INVOICE, facts(has_clause_quote="yes"), ASK, DEFAULT, id="quote-str"),
     # policy variants
     pytest.param(
         no_g05_policy(),
@@ -274,9 +254,7 @@ CASES = [
         id="send-payroll-batch-default",
     ),
     # Decimal values
-    pytest.param(
-        None, INVOICE, facts(amount=Decimal("200.00")), ALLOW, G01, id="amount-decimal"
-    ),
+    pytest.param(None, INVOICE, facts(amount=Decimal("200.00")), ALLOW, G01, id="amount-decimal"),
     pytest.param(
         None,
         INVOICE,
@@ -370,9 +348,7 @@ def test_default_policy_matches_a22() -> None:
     ]
     assert all(r.applies_to == INVOICE for r in policy.rules)
     assert policy.rules[-1].source_text == "(built in)"
-    assert all(
-        r.source_text != "(built in)" and r.source_text for r in policy.rules[:4]
-    )
+    assert all(r.source_text != "(built in)" and r.source_text for r in policy.rules[:4])
     assert [r.id for r in BUILTIN_RULES] == ["G-05"]
 
 
@@ -466,7 +442,10 @@ def test_rules_for_other_actions_are_ignored() -> None:
         rule("A-1", {"amount_lte": "100.00"}, ALLOW),
     )
     assert evaluate_rules(pol, INVOICE, facts()) == (ASK, DEFAULT)
-    assert evaluate_rules(pol, GuardAction.PAY_TEAM_MEMBER, facts()) == (ASK, ["P-1"])
+    assert evaluate_rules(pol, GuardAction.PAY_TEAM_MEMBER, facts()) == (
+        ASK,
+        ["DEFAULT", "P-1"],
+    )
 
 
 def test_policy_g05_is_not_duplicated() -> None:
@@ -511,9 +490,7 @@ COLLIDING_G05 = [
 
 
 @pytest.mark.parametrize(("when", "outcome"), COLLIDING_G05)
-def test_policy_cannot_override_builtin_g05(
-    when: dict[str, Any], outcome: LeashDecision
-) -> None:
+def test_policy_cannot_override_builtin_g05(when: dict[str, Any], outcome: LeashDecision) -> None:
     pol = _policy_with_g05(_colliding_g05(when, outcome))
     result = evaluate_rules(pol, INVOICE, facts(line_items_match_decimal_total=False))
     assert result == (DENY, ["G-05"])
@@ -540,9 +517,7 @@ def test_allow_rule_with_empty_when_never_matches() -> None:
     )
     # the ALLOW-needs-a-condition validator re-runs on construction, so skip it
     pol = LeashPolicy.model_construct(version=1, rules=[sneaky])
-    result = evaluate_rules(
-        pol, INVOICE, facts(amount="99999.00", extraction_confidence=0.1)
-    )
+    result = evaluate_rules(pol, INVOICE, facts(amount="99999.00", extraction_confidence=0.1))
     assert result == (ASK, DEFAULT)
 
 
@@ -555,9 +530,7 @@ def test_client_tag_is_case_and_space_insensitive(tags: list[str]) -> None:
 
 
 def test_client_tag_with_non_string_entry_fails_closed() -> None:
-    decision, _ = evaluate_rules(
-        default_policy(), INVOICE, facts(client_tags=["vip", 5])
-    )
+    decision, _ = evaluate_rules(default_policy(), INVOICE, facts(client_tags=["vip", 5]))
     assert decision != ALLOW
 
 

@@ -82,9 +82,7 @@ async def test_demo_pipeline_end_to_end() -> None:
     store = InMemoryMappingStore()
     calls: list[int] = []
 
-    async def mapper(
-        headers: list[str], samples: list[list[str]]
-    ) -> ColumnMappingProposal:
+    async def mapper(headers: list[str], samples: list[list[str]]) -> ColumnMappingProposal:
         calls.append(1)
         raise AssertionError("a known layout must not call the mapper")
 

@@ -35,9 +35,7 @@ class LineCheck:
     flags: tuple[str, ...]
 
 
-def _pr01(
-    line: DraftLine, history: MemberHistory, policy: LeashPolicy, now: datetime
-) -> bool:
+def _pr01(line: DraftLine, history: MemberHistory, policy: LeashPolicy, now: datetime) -> bool:
     member = line.member
     if member is None or member.email_changed_at is None:
         return False

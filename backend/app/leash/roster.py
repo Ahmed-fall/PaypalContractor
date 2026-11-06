@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 
 from ulid import ULID
 
@@ -30,7 +31,11 @@ class TeamMember:
 
 
 class RosterConflict(Exception):
-    """Another active member already uses this payout email or name."""
+    """Another active member already uses this payout email or name (see ``kind``)."""
+
+    def __init__(self, message: str, kind: Literal["email", "name"] = "email") -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 def normalise_name(name: str) -> str:
@@ -55,9 +60,7 @@ def create_member(
     )
 
 
-def update_member(
-    member: TeamMember, patch: TeamMemberUpdate, now: datetime
-) -> TeamMember:
+def update_member(member: TeamMember, patch: TeamMemberUpdate, now: datetime) -> TeamMember:
     changes: dict[str, object] = {}
     fields = patch.model_fields_set
     if "name" in fields and patch.name is not None:
@@ -99,10 +102,10 @@ class InMemoryRoster:
                 continue
             if other.payout_email == m.payout_email:
                 msg = "another active member already uses this payout email"
-                raise RosterConflict(msg)
+                raise RosterConflict(msg, "email")
             if normalise_name(other.name) == name_key:
                 msg = "another active member already has this name"
-                raise RosterConflict(msg)
+                raise RosterConflict(msg, "name")
 
     def add(self, m: TeamMember) -> None:
         self._check_conflict(m)

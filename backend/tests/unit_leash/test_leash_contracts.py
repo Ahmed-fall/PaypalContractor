@@ -92,9 +92,7 @@ def test_allow_rule_requires_a_condition() -> None:
 
 def test_guard_result_reason_capped_at_200() -> None:
     with pytest.raises(ValidationError):
-        c.GuardResult(
-            decision="ALLOW", rule_ids=["G-01"], reason="x" * 201, decision_id="lsd_1"
-        )
+        c.GuardResult(decision="ALLOW", rule_ids=["G-01"], reason="x" * 201, decision_id="lsd_1")
 
 
 def test_run_out_rejects_unknown_status() -> None:
@@ -125,11 +123,7 @@ def test_payroll_line_money_serializes_as_string() -> None:
         flags=[],
     )
     out = json.loads(line.model_dump_json())
-    assert (
-        out["gross"] == "220.00"
-        and out["hours"] == "10.00"
-        and out["owner_action"] is None
-    )
+    assert out["gross"] == "220.00" and out["hours"] == "10.00" and out["owner_action"] is None
 
 
 def test_mapping_proposal_rejects_unknown_target() -> None:
@@ -139,18 +133,14 @@ def test_mapping_proposal_rejects_unknown_target() -> None:
 
 def test_team_member_update_rejects_server_fields() -> None:
     with pytest.raises(ValidationError):
-        c.TeamMemberUpdate(
-            payout_email="a@b.co", email_changed_at="2026-11-04T18:40:00Z"
-        )  # type: ignore[call-arg]
+        c.TeamMemberUpdate(payout_email="a@b.co", email_changed_at="2026-11-04T18:40:00Z")  # type: ignore[call-arg]
     with pytest.raises(ValidationError):
         c.TeamMemberUpdate(first_paid_at="2026-11-04T18:40:00Z")  # type: ignore[call-arg]
 
 
 def test_team_member_create_rejects_nonpositive_rate() -> None:
     with pytest.raises(ValidationError):
-        c.TeamMemberCreate(
-            name="Omar", payout_email="omar@example.com", hourly_rate="0.00"
-        )  # type: ignore[arg-type]
+        c.TeamMemberCreate(name="Omar", payout_email="omar@example.com", hourly_rate="0.00")  # type: ignore[arg-type]
 
 
 def test_mapping_confirm_rejects_duplicate_targets() -> None:
@@ -184,9 +174,7 @@ def test_send_request_requires_idempotency_key() -> None:
         c.PayrollSendRequest(confirm=True)  # type: ignore[call-arg]
     with pytest.raises(ValidationError):
         c.PayrollSendRequest(confirm=True, idempotency_key="")
-    assert (
-        c.PayrollSendRequest(confirm=True, idempotency_key="k1").approve_run_flags == []
-    )
+    assert c.PayrollSendRequest(confirm=True, idempotency_key="k1").approve_run_flags == []
 
 
 def test_detective_models_leash_fields_default_none() -> None:

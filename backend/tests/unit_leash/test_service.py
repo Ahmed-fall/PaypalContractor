@@ -48,9 +48,7 @@ DEMO: dict[str, Any] = {
 ASK_CASE = {**DEMO, "amount": Decimal("300.00")}
 
 
-def make(
-    explainer: Any = None, timeout: float = 0.05
-) -> tuple[LeashService, InMemoryDecisionLog]:
+def make(explainer: Any = None, timeout: float = 0.05) -> tuple[LeashService, InMemoryDecisionLog]:
     log = InMemoryDecisionLog()
     service = LeashService(
         StaticPolicyProvider(default_policy()),
@@ -157,9 +155,7 @@ async def test_explainer_used_when_valid() -> None:
 async def test_explainer_receives_decision_inputs() -> None:
     seen: list[Any] = []
 
-    async def spy(
-        action: Any, decision: Any, ids: Any, facts: Any, *, use_llm: bool
-    ) -> str:
+    async def spy(action: Any, decision: Any, ids: Any, facts: Any, *, use_llm: bool) -> str:
         seen.append((action, decision, ids, facts))
         return "ok"
 
@@ -178,9 +174,7 @@ async def test_explainer_timeout_uses_template_quickly() -> None:
     start = time.perf_counter()
     result = await service.decide(INVOICE, dict(DEMO), "dsc_1")
     assert time.perf_counter() - start < 0.25
-    assert result.reason == template_reason(
-        INVOICE, LeashDecision.ALLOW, ["G-01"], DEMO
-    )
+    assert result.reason == template_reason(INVOICE, LeashDecision.ALLOW, ["G-01"], DEMO)
 
 
 async def _raises(*_: Any, **__: Any) -> str:
@@ -213,9 +207,7 @@ async def test_explainer_errors_use_template(bad: Any) -> None:
     service, _ = make(bad)
     result = await service.decide(INVOICE, dict(DEMO), "dsc_1")
     assert result.decision == LeashDecision.ALLOW
-    assert result.reason == template_reason(
-        INVOICE, LeashDecision.ALLOW, ["G-01"], DEMO
-    )
+    assert result.reason == template_reason(INVOICE, LeashDecision.ALLOW, ["G-01"], DEMO)
 
 
 @pytest.mark.asyncio
@@ -236,9 +228,7 @@ async def test_module_decide_uses_configured_service() -> None:
     try:
         result = await svc.decide(INVOICE, dict(DEMO), "dsc_9")
     finally:
-        svc.configure(
-            LeashService(StaticPolicyProvider(default_policy()), InMemoryDecisionLog())
-        )
+        svc.configure(LeashService(StaticPolicyProvider(default_policy()), InMemoryDecisionLog()))
     assert isinstance(result, GuardResult)
     assert log.records[0].subject_id == "dsc_9"
 
@@ -353,9 +343,7 @@ async def test_explainer_reason_boundary_200_chars() -> None:
     assert (await service.decide(INVOICE, dict(DEMO), "dsc_1")).reason == exact
     service, _ = make(too_long)
     result = await service.decide(INVOICE, dict(DEMO), "dsc_1")
-    assert result.reason == template_reason(
-        INVOICE, LeashDecision.ALLOW, ["G-01"], DEMO
-    )
+    assert result.reason == template_reason(INVOICE, LeashDecision.ALLOW, ["G-01"], DEMO)
 
 
 PAY = GuardAction.PAY_TEAM_MEMBER
@@ -426,9 +414,7 @@ async def test_use_llm_false_for_payroll_allow(
 ) -> None:
     # The guard is fail-closed and never allows payroll today (see
     # ALLOW_ENABLED_ACTIONS), so stub the rules to reach the ALLOW branch.
-    monkeypatch.setattr(
-        svc, "evaluate_rules", lambda *_a: (LeashDecision.ALLOW, ["P-1"])
-    )
+    monkeypatch.setattr(svc, "evaluate_rules", lambda *_a: (LeashDecision.ALLOW, ["P-1"]))
     seen: list[bool] = []
 
     async def recorder(*_: Any, use_llm: bool) -> str:
@@ -508,9 +494,7 @@ async def test_explainer_failure_is_logged_not_silent(
     service, _ = make(_raises)
     with caplog.at_level("WARNING"):
         result = await service.decide(INVOICE, dict(DEMO), "dsc_1")
-    assert result.reason == template_reason(
-        INVOICE, LeashDecision.ALLOW, ["G-01"], DEMO
-    )
+    assert result.reason == template_reason(INVOICE, LeashDecision.ALLOW, ["G-01"], DEMO)
     assert "RuntimeError" in caplog.text
 
 
@@ -531,9 +515,7 @@ async def test_template_path_never_waits_the_llm_budget() -> None:
     start = time.perf_counter()
     result = await service.decide(INVOICE, dict(DEMO), "dsc_1")
     assert time.perf_counter() - start < svc.TEMPLATE_PATH_TIMEOUT_S + 0.25
-    assert result.reason == template_reason(
-        INVOICE, LeashDecision.ALLOW, ["G-01"], DEMO
-    )
+    assert result.reason == template_reason(INVOICE, LeashDecision.ALLOW, ["G-01"], DEMO)
 
 
 @pytest.mark.asyncio

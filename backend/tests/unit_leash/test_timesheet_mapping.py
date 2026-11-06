@@ -44,9 +44,7 @@ class FakeMapper:
     def __init__(self) -> None:
         self.calls: list[tuple[list[str], list[list[str]]]] = []
 
-    async def __call__(
-        self, headers: list[str], samples: list[list[str]]
-    ) -> ColumnMappingProposal:
+    async def __call__(self, headers: list[str], samples: list[list[str]]) -> ColumnMappingProposal:
         self.calls.append((headers, samples))
         return ColumnMappingProposal(
             mapping=dict(DEMO_MAPPING), confidence={h: 0.9 for h in DEMO_MAPPING}
@@ -114,9 +112,7 @@ class _UnknownKeys:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "mapper", [_Raises(), _Slow(), None, _WrongType(), _UnknownKeys()]
-)
+@pytest.mark.parametrize("mapper", [_Raises(), _Slow(), None, _WrongType(), _UnknownKeys()])
 async def test_mapper_failure_falls_back_to_heuristics(mapper: object) -> None:
     table = read_table(DEMO_CSV, "t.csv")
     res = await resolve_mapping(
@@ -163,9 +159,7 @@ async def test_sample_rows_are_stringified_and_escaped() -> None:
 async def test_confirm_requires_all_required_fields() -> None:
     store = InMemoryMappingStore()
     with pytest.raises(TimesheetError) as ei:
-        await confirm_mapping(
-            store, "sig", {"Employee": "member", "Hrs": "hours"}, HEADERS
-        )
+        await confirm_mapping(store, "sig", {"Employee": "member", "Hrs": "hours"}, HEADERS)
     assert ei.value.code == "TIMESHEET_INVALID"
     assert await store.get("sig") is None
 
@@ -304,9 +298,7 @@ def test_bad_dates_rejected(day: object) -> None:
 
 def test_hours_rules() -> None:
     ok = parse_entries(
-        _table(
-            _row(hrs="-2.5"), _row(hrs=0), _row(hrs=" 999.99 "), _row(hrs=Decimal(3))
-        ),
+        _table(_row(hrs="-2.5"), _row(hrs=0), _row(hrs=" 999.99 "), _row(hrs=Decimal(3))),
         DEMO_MAPPING,
     )
     assert [e.hours for e in ok] == [

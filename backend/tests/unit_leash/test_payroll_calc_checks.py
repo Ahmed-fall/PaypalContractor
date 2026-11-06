@@ -162,9 +162,7 @@ CASES = [
         id="pr01-outside-window-no-history-falls-back-to-first-paid",
     ),
     pytest.param(_member("Omar"), [_entry()], HIST, (ALLOW, ()), id="pr01-never"),
-    pytest.param(
-        _member("Omar"), [_entry(hours="12.00")], HIST, (ALLOW, ()), id="pr02-12h"
-    ),
+    pytest.param(_member("Omar"), [_entry(hours="12.00")], HIST, (ALLOW, ()), id="pr02-12h"),
     pytest.param(
         _member("Omar"),
         [_entry(hours="12.01")],
@@ -282,9 +280,7 @@ def test_each_check(
         ("10.00", "0.00", (ASK, ("PR-06",))),
     ],
 )
-def test_pr06_run(
-    total: str, cash: str, expected: tuple[LeashDecision, tuple[str, ...]]
-) -> None:
+def test_pr06_run(total: str, cash: str, expected: tuple[LeashDecision, tuple[str, ...]]) -> None:
     res = check_run(D(total), D(cash), POLICY)
     assert (res.decision, res.flags) == expected
 
@@ -365,9 +361,7 @@ def test_checks_are_pure() -> None:
     b = check_line(line, HIST, "MS-01", POLICY, NOW)
     assert a == b
     assert (line, entries) == snapshot
-    assert check_run(D("1.00"), D("2.00"), POLICY) == check_run(
-        D("1.00"), D("2.00"), POLICY
-    )
+    assert check_run(D("1.00"), D("2.00"), POLICY) == check_run(D("1.00"), D("2.00"), POLICY)
 
 
 def test_negative_hours_line_does_not_reduce_total_or_hide_pr06() -> None:

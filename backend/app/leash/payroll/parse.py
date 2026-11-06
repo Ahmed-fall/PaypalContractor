@@ -33,9 +33,7 @@ _DELIMITERS = ",;\t"
 class TimesheetError(Exception):
     """A timesheet upload was rejected. `message` is plain English for the UI."""
 
-    def __init__(
-        self, code: str, message: str, details: dict[str, Any] | None = None
-    ) -> None:
+    def __init__(self, code: str, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
@@ -120,12 +118,8 @@ def _read_csv_rows(data: bytes) -> Generator[list[object], None, None]:
 def _read_xlsx_rows(data: bytes) -> Generator[list[object], None, None]:
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         if sum(i.file_size for i in zf.infolist()) > MAX_UNPACKED_BYTES:
-            raise TimesheetError(
-                "FILE_TOO_LARGE", "This spreadsheet is too large once unpacked."
-            )
-    wb = load_workbook(
-        io.BytesIO(data), read_only=True, data_only=False, keep_links=False
-    )
+            raise TimesheetError("FILE_TOO_LARGE", "This spreadsheet is too large once unpacked.")
+    wb = load_workbook(io.BytesIO(data), read_only=True, data_only=False, keep_links=False)
     try:
         if not wb.worksheets:
             return
@@ -154,9 +148,7 @@ def _parse(raw: Generator[list[object], None, None]) -> RawTable:
             while cells and (cells[-1] is None or not str(cells[-1]).strip()):
                 cells.pop()
             if any(c is None or not str(c).strip() for c in cells):
-                raise _invalid(
-                    "This timesheet needs a header row with a name for every column."
-                )
+                raise _invalid("This timesheet needs a header row with a name for every column.")
             headers = tuple(str(c).strip() for c in cells)
             if len({normalise_header(h) for h in headers}) != len(headers):
                 raise _invalid("Two columns have the same header name.")

@@ -18,9 +18,7 @@ _ELLIPSIS = "…"
 # Appended when whole sentences no longer fit: never cut a reason mid-sentence.
 MORE_CHECKS = "Other checks also apply."
 
-_DEFAULT = (
-    "Leash couldn't confirm this action is safe to run on its own. Review it first."
-)
+_DEFAULT = "Leash couldn't confirm this action is safe to run on its own. Review it first."
 _DEFAULTS: dict[LeashDecision, str] = {
     LeashDecision.ALLOW: "Your Leash policy allows this action to run on its own.",
     LeashDecision.ASK: _DEFAULT,
@@ -35,31 +33,24 @@ _SENTENCES: dict[str, dict[LeashDecision, str]] = {
         ),
     },
     "G-02": {
-        LeashDecision.ASK: (
-            "{amt} is above your auto-send limit. Review it before sending."
-        ),
+        LeashDecision.ASK: ("{amt} is above your auto-send limit. Review it before sending."),
     },
     "G-03": {
-        LeashDecision.ASK: (
-            "This client is marked never_auto_contact. Review before sending."
-        ),
+        LeashDecision.ASK: ("This client is marked never_auto_contact. Review before sending."),
     },
     "G-04": {
         LeashDecision.ASK: (
-            "This client already got a correction invoice recently. "
-            "Review before sending."
+            "This client already got a correction invoice recently. Review before sending."
         ),
     },
     "G-05": {
         LeashDecision.DENY: (
-            "The invoice line items don't add up to the amount owed, "
-            "so it can't be sent."
+            "The invoice line items don't add up to the amount owed, so it can't be sent."
         ),
     },
     "PR-01": {
         LeashDecision.ASK: (
-            "This team member's payout email changed recently. "
-            "Confirm it with them before paying."
+            "This team member's payout email changed recently. Confirm it with them before paying."
         ),
     },
     "PR-02": {
@@ -67,14 +58,11 @@ _SENTENCES: dict[str, dict[LeashDecision, str]] = {
             "The hours on this line are more than one person can work. "
             "Check the timesheet before paying."
         ),
-        LeashDecision.DENY: (
-            "The hours on this line are zero or negative, so it can't be paid."
-        ),
+        LeashDecision.DENY: ("The hours on this line are zero or negative, so it can't be paid."),
     },
     "PR-03": {
         LeashDecision.ASK: (
-            "This is the first payment to this team member. "
-            "Check their details before paying."
+            "This is the first payment to this team member. Check their details before paying."
         ),
     },
     "PR-04": {
@@ -85,8 +73,7 @@ _SENTENCES: dict[str, dict[LeashDecision, str]] = {
     },
     "PR-05": {
         LeashDecision.DENY: (
-            "This person isn't in the roster or appears more than once, "
-            "so they can't be paid."
+            "This person isn't in the roster or appears more than once, so they can't be paid."
         ),
     },
     "PR-06": {
@@ -97,10 +84,10 @@ _SENTENCES: dict[str, dict[LeashDecision, str]] = {
     },
     "PR-07": {
         LeashDecision.DENY: (
-            "This team member was already paid for this milestone, "
-            "so they can't be paid again."
+            "This team member was already paid for this milestone, so they can't be paid again."
         ),
     },
+    "PAYROLL-CHECKS": {LeashDecision.ALLOW: "All payroll checks passed."},
 }
 
 
@@ -113,6 +100,7 @@ _RULE_ACTIONS: dict[str, frozenset[GuardAction]] = {
     **{f"G-0{i}": _INVOICE for i in range(1, 6)},
     **{f"PR-0{i}": _LINE for i in (1, 2, 3, 4, 5, 7)},
     "PR-06": _RUN,
+    "PAYROLL-CHECKS": _LINE | _RUN,
 }
 # check_line uses one id (PR-02) for both hours cases and a line's decision is the
 # strictest flag, so DENY + PR-02 + another deny check cannot tell which case fired.

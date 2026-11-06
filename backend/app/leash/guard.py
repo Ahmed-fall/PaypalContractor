@@ -18,6 +18,10 @@ from ..schemas.contracts import GuardAction, LeashDecision, LeashPolicy, LeashRu
 from .policy import BUILTIN_RULES
 
 DEFAULT_RULE_ID = "DEFAULT"
+PAYROLL_CHECKS_RULE_ID = "PAYROLL-CHECKS"
+PAYROLL_ACTIONS: frozenset[GuardAction] = frozenset(
+    {GuardAction.PAY_TEAM_MEMBER, GuardAction.SEND_PAYROLL_BATCH}
+)
 
 KNOWN_CONDITIONS: frozenset[str] = frozenset(
     {
@@ -31,12 +35,12 @@ KNOWN_CONDITIONS: frozenset[str] = frozenset(
     }
 )
 
-# Payroll has no facts vocabulary until WP-5.4, so an ALLOW rule can never match there.
-ALLOW_ENABLED_ACTIONS: frozenset[GuardAction] = frozenset(
-    {GuardAction.SEND_REMEDIATION_INVOICE}
-)
+# Policy ALLOW rules never match payroll: only the deterministic payroll checks
+# (facts["payroll_check"]) can supply a payroll ALLOW; policy rules can only tighten it.
+ALLOW_ENABLED_ACTIONS: frozenset[GuardAction] = frozenset({GuardAction.SEND_REMEDIATION_INVOICE})
 
 _MONEY_2DP = re.compile(r"[0-9]+\.[0-9]{2}")
+_FLAG = re.compile(r"PR-0[1-7]")
 _RANK = {LeashDecision.ALLOW: 0, LeashDecision.ASK: 1, LeashDecision.DENY: 2}
 
 
@@ -154,18 +158,59 @@ def _matches(rule: LeashRule, facts: dict[str, Any]) -> bool:
     return True
 
 
+def _payroll_check(
+    action: GuardAction, facts: dict[str, Any]
+) -> tuple[LeashDecision, list[str]] | None:
+    """The base decision from ``facts["payroll_check"]``, or None if absent or invalid.
+
+    Valid: a dict with exactly ``decision`` (a LeashDecision or its exact string value)
+    and ``flags`` (distinct ``PR-01``..``PR-07`` strings in a list or tuple). ALLOW needs
+    no flags; ASK and DENY need at least one.
+    """
+    if action not in PAYROLL_ACTIONS:
+        return None
+    check = facts.get("payroll_check")
+    # Exact types only: a subclass can lie about its value, hash or keys.
+    if type(check) is not dict or set(check) != {"decision", "flags"}:
+        return None
+    raw, flags = check["decision"], check["flags"]
+    if type(raw) is LeashDecision:
+        decision = raw
+    elif type(raw) is str and raw in {d.value for d in LeashDecision}:
+        decision = LeashDecision(raw)
+    else:
+        return None
+    if type(flags) not in (list, tuple):
+        return None
+    if not all(type(f) is str and _FLAG.fullmatch(f) for f in flags):
+        return None
+    if len(set(flags)) != len(flags):
+        return None
+    if (decision == LeashDecision.ALLOW) != (len(flags) == 0):
+        return None
+    return decision, list(flags) or [PAYROLL_CHECKS_RULE_ID]
+
+
 def evaluate_rules(
     policy: LeashPolicy, action: GuardAction, facts: dict[str, Any]
 ) -> tuple[LeashDecision, list[str]]:
     """Decide ALLOW/ASK/DENY for ``action``. Pure: no I/O, no mutation, no AI."""
     builtins = [r for r in BUILTIN_RULES if r.applies_to == action]
-    reserved = {r.id for r in builtins} | {DEFAULT_RULE_ID}
+    reserved = {r.id for r in builtins} | {DEFAULT_RULE_ID, PAYROLL_CHECKS_RULE_ID}
     # Built-ins are authoritative: a policy rule reusing a built-in id (or the
     # reserved DEFAULT id) is ignored.
     rules = [r for r in policy.rules if r.applies_to == action and r.id not in reserved]
     rules.extend(builtins)
     matched = [r for r in rules if _matches(r, facts)]
-    if not matched:
-        return LeashDecision.ASK, [DEFAULT_RULE_ID]
-    final = max((r.outcome for r in matched), key=_RANK.__getitem__)
-    return final, list(dict.fromkeys(r.id for r in matched if r.outcome == final))
+    base = _payroll_check(action, facts)
+    if base is None:
+        if not matched:
+            return LeashDecision.ASK, [DEFAULT_RULE_ID]
+        final = max((r.outcome for r in matched), key=_RANK.__getitem__)
+    else:
+        final = max([base[0], *(r.outcome for r in matched)], key=_RANK.__getitem__)
+    ids = list(base[1]) if base is not None and base[0] == final else []
+    ids.extend(r.id for r in matched if r.outcome == final)
+    if base is None and action in PAYROLL_ACTIONS and final == LeashDecision.ASK:
+        ids.insert(0, DEFAULT_RULE_ID)  # a missing/invalid check stays visible
+    return final, list(dict.fromkeys(ids))
