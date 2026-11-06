@@ -1,6 +1,8 @@
-import { useMemo } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import { AgGridReact, type CustomCellRendererProps } from "ag-grid-react";
 import type { ColDef, GetRowIdParams } from "ag-grid-community";
+
+const GRID_LABEL = "Payroll lines";
 import { Button } from "../common/Button";
 import { DecisionBadge, Pill } from "../common/StatusBadge";
 import { formatMoney, toCents } from "../../lib/money";
@@ -60,12 +62,21 @@ function ActionsCell({ data, context }: Cell) {
   if (!data || data.locked) return null;
   const name = data.member_name;
   const act = (action: "APPROVED" | "EXCLUDED") => context.onAction(data.line_id, action);
+  const approveButton = (
+    <Button size="sm" aria-label={`Approve ${name}`} disabled={data.busy} onClick={() => act("APPROVED")}>
+      Approve
+    </Button>
+  );
   let buttons: JSX.Element | null;
   if (data.owner_action === "EXCLUDED") {
+    // "Undo" would send APPROVED. That is only harmless where Leash allowed the line; an
+    // excluded ASK line comes back through an explicit Approve with its flags in view.
+    const undo = data.decision === "ALLOW" && data.approvable;
+    const reapprove = data.decision === "ASK" && data.approvable;
     buttons = (
-      <span className="flex items-center gap-2">
+      <span className="flex flex-wrap items-center gap-2">
         <span className="text-[13px] text-ink-muted">Excluded</span>
-        {data.approvable && (
+        {undo && (
           <button
             type="button"
             className="text-[13px] font-medium text-ink underline disabled:opacity-45"
@@ -76,6 +87,7 @@ function ActionsCell({ data, context }: Cell) {
             Undo
           </button>
         )}
+        {reapprove && approveButton}
       </span>
     );
   } else {
@@ -83,11 +95,7 @@ function ActionsCell({ data, context }: Cell) {
     const showApprove = data.approvable && data.decision === "ASK" && data.owner_action === null;
     buttons = (
       <span className="flex flex-wrap items-center gap-2">
-        {showApprove && (
-          <Button size="sm" aria-label={`Approve ${name}`} disabled={data.busy} onClick={() => act("APPROVED")}>
-            Approve
-          </Button>
-        )}
+        {showApprove && approveButton}
         <Button size="sm" variant="secondary" aria-label={`Exclude ${name}`} disabled={data.busy} onClick={() => act("EXCLUDED")}>
           Exclude
         </Button>
@@ -184,10 +192,19 @@ export default function PayrollRunGrid({
       {
         colId: "payout",
         headerName: "PayPal",
-        width: 120,
         valueGetter: (p) => (p.data ? payoutLabel(p.data.payout_status) : ""),
+        width: 180,
+        wrapText: true,
+        autoHeight: true,
         cellRenderer: ({ data }: Cell) =>
-          data ? <Pill tone={payoutTone(data.payout_status)}>{payoutLabel(data.payout_status)}</Pill> : null,
+          data ? (
+            <span className="flex flex-col items-start gap-1 py-2">
+              <Pill tone={payoutTone(data.payout_status)}>{payoutLabel(data.payout_status)}</Pill>
+              {data.payout_status === "UNCLAIMED" && (
+                <span className="whitespace-normal text-[12px] leading-snug text-warn">{`${data.member_name} hasn't claimed it yet`}</span>
+              )}
+            </span>
+          ) : null,
       },
       {
         colId: "actions",
@@ -206,8 +223,14 @@ export default function PayrollRunGrid({
   );
   const defaultColDef = useMemo<ColDef<RunGridRow>>(() => ({ sortable: true, resizable: true, suppressHeaderMenuButton: true }), []);
 
+  // AG Grid renders its own role="grid" root; give it the same name as the region.
+  const wrapper = useRef<HTMLDivElement>(null);
+  const labelRoot = useCallback(() => {
+    wrapper.current?.querySelector('[role="grid"], [role="treegrid"]')?.setAttribute("aria-label", GRID_LABEL);
+  }, []);
+
   return (
-    <div role="region" aria-label="Payroll lines" className="ag-theme-quartz fd-grid w-full">
+    <div ref={wrapper} role="region" aria-label={GRID_LABEL} className="ag-theme-quartz fd-grid w-full">
       <AgGridReact<RunGridRow>
         rowData={rows}
         columnDefs={colDefs}
@@ -219,6 +242,8 @@ export default function PayrollRunGrid({
         headerHeight={42}
         suppressColumnVirtualisation
         suppressCellFocus
+        onGridReady={labelRoot}
+        onFirstDataRendered={labelRoot}
         overlayNoRowsTemplate="<span style='color:#6b7f7c;font-size:14px'>This run has no lines.</span>"
       />
     </div>

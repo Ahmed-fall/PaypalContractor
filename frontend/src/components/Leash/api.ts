@@ -78,9 +78,13 @@ export const payrollRunQuiet = (runId: string) => request<PayrollRunOut>("GET", 
 export const updatePayrollLineQuiet = (runId: string, lineId: string, body: PayrollLineUpdate) =>
   request<PayrollRunOut>("PATCH", `${runPath(runId)}/lines/${encodeURIComponent(lineId)}`, { body, quiet: true });
 
-/** Pay the team (one PayPal Payouts batch). Quiet: 409 open asks and 503 are shown beside Pay team. */
-export const sendPayrollQuiet = (runId: string, body: PayrollSendRequest) =>
-  request<PayrollSendResponse>("POST", `${runPath(runId)}/send`, { body, quiet: true });
+/**
+ * Pay the team (one PayPal Payouts batch). `expectedTotal` is the total the owner confirmed;
+ * the server answers 409 RUN_NOT_SENDABLE if the re-checked run would pay anything else.
+ * Quiet: 409 open asks and 503 are shown beside Pay team.
+ */
+export const sendPayrollQuiet = (runId: string, body: PayrollSendRequest, expectedTotal: string) =>
+  request<PayrollSendResponse>("POST", `${runPath(runId)}/send`, { body, query: { expected_total: expectedTotal }, quiet: true });
 
 /** The active policy, for the payroll margin limit. Quiet: the screen falls back to 80%. */
 export const activePolicyQuiet = () => request<ActiveLeashPolicy>("GET", "/leash/policy", { quiet: true });

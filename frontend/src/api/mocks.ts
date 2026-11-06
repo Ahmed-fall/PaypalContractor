@@ -132,7 +132,7 @@ export function setMockLatency(ms: number): void {
 /** Restore the seeded demo state (also what POST /demo/reset does). */
 export function resetMockState(): void {
   state = seed();
-  payrollMock = { run: null, sentGets: 0 };
+  payrollMock = { run: null, sentGets: 0, sendKey: null };
   pendingUploadId = null;
   uploadKeys.clear();
   teamMock = null;
@@ -687,7 +687,8 @@ function patchMember(req: TransportRequest, id: string): TransportResponse {
   return ok(member);
 }
 
-let payrollMock: { run: PayrollRunOut | null; sentGets: number } = { run: null, sentGets: 0 };
+/** `sendKey` is the idempotency_key of the send that went out, like `payroll_runs.idempotency_key`. */
+let payrollMock: { run: PayrollRunOut | null; sentGets: number; sendKey: string | null } = { run: null, sentGets: 0, sendKey: null };
 /** Like the real backend: an upload waiting for its column mapping blocks run creation (409 MAPPING_REQUIRED). */
 let pendingUploadId: string | null = null;
 
@@ -767,6 +768,14 @@ function patchRunLine(req: TransportRequest, lineId: string): TransportResponse 
     // The fixture pair: excluding Omar drops PR-06 and the total to $420.00.
     const after = pick<PayrollRunOut>(leashFixtures, "payroll_run_after_exclude.json");
     if (after) payrollMock.run = after;
+  } else if (action === "APPROVED" && lineId === "prl_0001" && line.owner_action === "EXCLUDED") {
+    // And back: approving Omar again re-checks the run to $720.00 with PR-06 open.
+    const back = pick<PayrollRunOut>(leashFixtures, "payroll_run_awaiting_approval.json");
+    if (back) {
+      const omar = back.lines.find((l) => l.line_id === "prl_0001");
+      if (omar) omar.owner_action = "APPROVED";
+      payrollMock.run = back;
+    }
   } else {
     line.owner_action = action;
   }
@@ -780,8 +789,20 @@ function sendRun(req: TransportRequest): TransportResponse {
   const ticked = Array.isArray(approved) ? approved.filter((f): f is string => typeof f === "string") : [];
   const sent = pick<PayrollSendResponse>(leashFixtures, "payroll_send_response.json");
   if (!run || !sent) return fail(404, "NOT_FOUND", "Fixture payroll_send_response.json is not available.");
-  if (run.status === "SENT" || run.status === "PAID") return ok(sent, 202);
-  const openLines = run.lines.filter((l) => l.decision === "ASK" && l.owner_action === null).map((l) => l.line_id);
+  const key = (req.body as { idempotency_key?: unknown } | null)?.idempotency_key;
+  if (run.status === "SENT" || run.status === "PAID" || run.status === "PARTIAL" || run.status === "FAILED") {
+    // Like `payouts._existing`: only a replay with the same key gets the stored batch.
+    if (key === payrollMock.sendKey) return ok(sent, 202);
+    return fail(409, "RUN_NOT_SENDABLE", "This payroll run was already sent to PayPal. Reconcile it before trying again.");
+  }
+  // Like `?expected_total=`: the run would pay a different total than the owner confirmed.
+  const expected = req.query.expected_total;
+  if (expected !== undefined && expected !== run.total) {
+    return fail(409, "RUN_NOT_SENDABLE", "The payroll run changed. Refresh it and try again.");
+  }
+  const openLines = run.lines
+    .filter((l) => l.decision === "ASK" && l.owner_action === null)
+    .map((l) => ({ line_id: l.line_id, flags: l.flags }));
   const openFlags = run.run_decision === "ASK" ? run.run_flags.filter((f) => !ticked.includes(f)) : [];
   if (openLines.length > 0 || openFlags.length > 0) {
     return fail(409, "LEASH_ASK_UNRESOLVED", "Some checks still need your decision.", {
@@ -795,6 +816,7 @@ function sendRun(req: TransportRequest): TransportResponse {
     if (l.owner_action !== "EXCLUDED") l.payout_status = "PENDING";
   }
   payrollMock.sentGets = 0;
+  payrollMock.sendKey = typeof key === "string" ? key : null;
   return ok(sent, 202);
 }
 

@@ -11,6 +11,7 @@
  * Money is integer cents (lib/money `toCents`), never floats.
  */
 import { toCents } from "../../lib/money";
+import { flagLabel } from "./format";
 import type { PayrollLineOut, PayrollRunOut, PayrollRunStatus } from "../../types/contracts";
 
 /** The guard's "could not check this" id. Nothing carrying it can be approved. */
@@ -105,21 +106,43 @@ export function peopleLabel(n: number): string {
   return plural(n, "person", "people");
 }
 
+/** A run-level flag in words. PR-06 names the policy's own limit; DEFAULT is never "approvable". */
+export function runFlagLabel(flag: string, limitPct = "80"): string {
+  if (flag === "PR-06") return `Over ${limitPct}% of cash received`;
+  if (flag === UNCHECKED) return "Leash couldn't check this run yet";
+  return flagLabel(flag);
+}
+
+/** Never checked: no run decision yet (the server reports ASK with no flags) or still PREPARED. */
+function notChecked(run: PayrollRunOut): boolean {
+  return run.status === "PREPARED" || (run.run_decision === "ASK" && run.run_flags.length === 0);
+}
+
+/**
+ * The run check came back DEFAULT. Nothing on screen can approve that, and a GET does not
+ * re-check, so Pay team stays clickable: the server re-runs every check under the run lock
+ * on send and answers 409 with whatever is still open (`lines_ready_locked`).
+ */
+export function needsRecheck(run: PayrollRunOut): boolean {
+  return !isLocked(run.status) && run.run_decision === "ASK" && run.run_flags.includes(UNCHECKED);
+}
+
 /**
  * Why Pay team is disabled, in plain words; empty when it may be pressed.
  * `limitPct` is the policy's payroll margin limit, for the PR-06 wording.
  */
 export function payBlockers(run: PayrollRunOut, ticked: readonly string[], limitPct = "80"): string[] {
   if (isLocked(run.status)) return [];
+  if (notChecked(run)) return ["Leash hasn't checked this run yet"];
   if (run.run_decision === "DENY") return ["Leash denied this run"];
   const open = openAsks(run, ticked);
+  const flags = open.runFlags.filter((f) => f !== UNCHECKED); // see needsRecheck
   const out: string[] = [];
   if (open.lines.length > 0) {
     out.push(`${plural(open.lines.length, "line still needs", "lines still need")} your decision`);
   }
-  if (open.runFlags.includes(UNCHECKED)) out.push("Leash couldn't check this run yet. Refresh it");
-  else if (open.runFlags.length === 1 && open.runFlags[0] === "PR-06") out.push(`Approve the ${limitPct}% check above`);
-  else if (open.runFlags.length > 0) out.push("Approve the run checks above");
+  if (flags.length === 1 && flags[0] === "PR-06") out.push(`Approve the ${limitPct}% check above`);
+  else if (flags.length > 0) out.push("Approve the run checks above");
   if (out.length === 0 && runTotalsCents(run).people === 0) out.push("Nobody is left to pay");
   return out;
 }
@@ -151,6 +174,8 @@ function nonce(): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+const MAX_KEY = 64; // PayrollSendRequest.idempotency_key max_length
+
 /** One per page session (module load), so a reload is a new session but a re-render is not. */
 const sessionNonce = nonce();
 const sendKeys = new Map<string, string>();
@@ -163,7 +188,9 @@ const sendKeys = new Map<string, string>();
 export function sendKey(runId: string): string {
   let key = sendKeys.get(runId);
   if (!key) {
-    key = `send-${runId}-${sessionNonce}`.slice(0, 64);
+    key = `send-${runId}-${sessionNonce}`;
+    // Never shorten: two long run ids could collide on one key and replay the wrong batch.
+    if (key.length > MAX_KEY) throw new Error(`Run id ${runId} is too long for an idempotency key.`);
     sendKeys.set(runId, key);
   }
   return key;
