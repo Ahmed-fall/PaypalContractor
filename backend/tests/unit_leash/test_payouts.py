@@ -315,6 +315,20 @@ def test_excluded_line_is_left_unsent(sf: SessionMaker) -> None:
 
 
 @respx.mock
+def test_expected_total_is_checked_under_the_run_lock(sf: SessionMaker) -> None:
+    route = respx.post(PAYOUTS_URL).mock(return_value=_created())
+    asyncio.run(runs.set_line_action(RUN_ID, "prl_0003", "EXCLUDED", None))
+    ready = asyncio.run(runs.lines_ready_to_send(RUN_ID, []))
+    with pytest.raises(ApiError) as err:
+        asyncio.run(payouts.send_payroll_batch(RUN_ID, ready, KEY, expected_total=D("219.99")))
+    assert err.value.status_code == 409 and err.value.code == "RUN_NOT_SENDABLE"
+    assert route.call_count == 0
+    assert _run(sf).sender_batch_id is None
+    asyncio.run(payouts.send_payroll_batch(RUN_ID, ready, KEY, expected_total=D("220.00")))
+    assert route.call_count == 1
+
+
+@respx.mock
 def test_send_twice_posts_one_batch(sf: SessionMaker) -> None:
     route = respx.post(PAYOUTS_URL).mock(return_value=_created())
     assert _send() == "5UXD2E8A7EBQJ"
