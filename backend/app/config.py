@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     # Public PayPal sandbox test card, so /simulator/pay can capture server-side
     # without a browser approval popup. Override per environment if needed.
-    simulator_card_number: str = "4032038441061188"
+    simulator_card_number: str = "4032039317984658"
     simulator_card_expiry: str = "2030-12"
     simulator_card_csc: str = "123"
 
