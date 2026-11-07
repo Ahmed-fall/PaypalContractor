@@ -25,6 +25,8 @@ from .services.paypal import close_http_client as _close_paypal_http
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger(__name__)
 
+API_PREFIX = "/api/v1"  # A.2: every route lives under the versioned base
+
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -80,20 +82,23 @@ def create_app() -> FastAPI:
     from .api.simulator import router as simulator_router
     from .api.webhooks import router as webhooks_router
 
-    app.include_router(contracts_router)
-    app.include_router(simulator_router)
-    app.include_router(webhooks_router)
-    app.include_router(ledger_router)
-    app.include_router(discrepancies_router)
-    app.include_router(health_router)
-    _mount_leash(app)
+    for router in (
+        contracts_router,
+        simulator_router,
+        webhooks_router,
+        ledger_router,
+        discrepancies_router,
+        health_router,
+    ):
+        app.include_router(router, prefix=API_PREFIX)
+    _mount_leash(app)  # api/leash.py already carries /api/v1/leash
 
     @app.get("/", include_in_schema=False)
     def root() -> dict[str, str]:
         return {
             "service": "the-financial-detective",
             "docs": "/docs",
-            "health": "/health",
+            "health": f"{API_PREFIX}/health",
         }
 
     return app

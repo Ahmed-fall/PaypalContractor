@@ -107,7 +107,7 @@ def test_compliant_payment(client: TestClient) -> None:
     mock_order("ORDER-COMPLIANT-01", "1000.00")
 
     got = client.post(
-        "/simulator/pay",
+        "/api/v1/simulator/pay",
         json=pay_request("1000.00", "2026-10-14", "compliant-key"),
         headers=DEMOS,
     )
@@ -119,7 +119,7 @@ def test_compliant_payment(client: TestClient) -> None:
     assert body["discrepancy_id"] is None
     assert body["payroll_run_id"] is None
 
-    ledger = client.get("/ledger").json()
+    ledger = client.get("/api/v1/ledger").json()
     assert ledger["summary"]["total_captured"] == "1000.00"
     assert ledger["rows"][0]["discrepancy_status"] == "NONE"
 
@@ -130,7 +130,7 @@ def test_underpaid_late_payment_and_guard(client: TestClient) -> None:
     mock_order("ORDER-UNDERPAID-A1", "500.00")
 
     got = client.post(
-        "/simulator/pay",
+        "/api/v1/simulator/pay",
         json=pay_request("500.00", "2026-10-25", "underpaid-key"),
         headers=DEMOS,
     )
@@ -140,7 +140,7 @@ def test_underpaid_late_payment_and_guard(client: TestClient) -> None:
     assert body["discrepancy_id"] is not None
     assert body["remediation_invoice"] is None
 
-    ledger = client.get("/ledger").json()
+    ledger = client.get("/api/v1/ledger").json()
     row = ledger["rows"][0]
     shortfall = Decimal(row["shortfall_amount"])
     penalty = Decimal(row["penalty_amount"])
@@ -156,10 +156,10 @@ def test_duplicate_capture_is_rejected(client: TestClient) -> None:
     mock_order("ORDER-DUPLICATE-01", "1000.00")
 
     first = client.post(
-        "/simulator/pay", json=pay_request("1000.00", "2026-10-14", "dup"), headers=DEMOS
+        "/api/v1/simulator/pay", json=pay_request("1000.00", "2026-10-14", "dup"), headers=DEMOS
     )
     second = client.post(
-        "/simulator/pay", json=pay_request("1000.00", "2026-10-14", "dup"), headers=DEMOS
+        "/api/v1/simulator/pay", json=pay_request("1000.00", "2026-10-14", "dup"), headers=DEMOS
     )
 
     assert first.status_code == 200
@@ -180,7 +180,7 @@ def test_card_order_captured_at_create_skips_capture_call(client: TestClient) ->
     )
 
     got = client.post(
-        "/simulator/pay",
+        "/api/v1/simulator/pay",
         json=pay_request("1000.00", "2026-10-14", "card-key"),
         headers=DEMOS,
     )
@@ -191,7 +191,7 @@ def test_card_order_captured_at_create_skips_capture_call(client: TestClient) ->
     assert create.call_count == 1
     assert create.calls[0].request.headers["PayPal-Request-Id"] == "ms_seed_01:card-key"
     assert not capture.called
-    assert client.get("/ledger").json()["summary"]["total_captured"] == "1000.00"
+    assert client.get("/api/v1/ledger").json()["summary"]["total_captured"] == "1000.00"
 
 
 @respx.mock
@@ -201,7 +201,7 @@ def test_created_order_is_captured_with_its_own_request_id(client: TestClient) -
     capture = respx.routes[-1]
 
     got = client.post(
-        "/simulator/pay",
+        "/api/v1/simulator/pay",
         json=pay_request("1000.00", "2026-10-14", "created-key"),
         headers=DEMOS,
     )

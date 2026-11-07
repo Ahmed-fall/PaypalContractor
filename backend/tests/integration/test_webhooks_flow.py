@@ -79,21 +79,21 @@ def test_webhook_signature_then_capture_audits(client: TestClient) -> None:
     event = capture_event("CAP-WEBHOOK-01", "500.00")
     headers = {"Content-Type": "application/json", **TRANSMISSION_HEADERS}
 
-    first = client.post("/webhooks/paypal", content=json.dumps(event), headers=headers)
+    first = client.post("/api/v1/webhooks/paypal", content=json.dumps(event), headers=headers)
     assert first.status_code == 200
     assert first.json() == {"received": True}
 
-    ledger = client.get("/ledger").json()
+    ledger = client.get("/api/v1/ledger").json()
     row = ledger["rows"][0]
     assert row["paypal_capture_id"] == "CAP-WEBHOOK-01"
     assert row["webhook_verified"] is True
     assert row["discrepancy_status"] in ("PENDING_APPROVAL", "BLOCKED")
 
-    repeat = client.post("/webhooks/paypal", content=json.dumps(event), headers=headers)
+    repeat = client.post("/api/v1/webhooks/paypal", content=json.dumps(event), headers=headers)
     assert repeat.status_code == 200
 
     missing = client.post(
-        "/webhooks/paypal", content=json.dumps(event), headers={"Content-Type": "application/json"}
+        "/api/v1/webhooks/paypal", content=json.dumps(event), headers={"Content-Type": "application/json"}
     )
     assert missing.status_code == 400
 
@@ -102,7 +102,7 @@ def test_webhook_signature_then_capture_audits(client: TestClient) -> None:
 def test_webhook_bad_signature_is_refused(client: TestClient) -> None:
     verify_mock("FAILURE")
     got = client.post(
-        "/webhooks/paypal",
+        "/api/v1/webhooks/paypal",
         content=json.dumps(capture_event("CAP-WEBHOOK-02", "500.00")),
         headers={"Content-Type": "application/json", **TRANSMISSION_HEADERS},
     )
