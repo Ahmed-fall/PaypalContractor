@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -14,6 +15,7 @@ from sqlalchemy import func, select
 from backend.app.config import get_settings
 from backend.app.db import Base, engine
 from backend.app.db.database import SessionLocal
+from backend.app.db.models import Discrepancy, PaypalCapture
 from backend.app.leash.models import (
     LeashDecisionRow,
     LeashPolicyRow,
@@ -134,6 +136,34 @@ def test_reset_clears_leash_state_and_keeps_decisions(client: TestClient) -> Non
     second = pay(client, "take-2")
     assert second != first
     assert count(PayrollRunRow) == 1
+
+
+@respx.mock
+def test_reset_after_a_discrepancy_wipes_in_fk_order(client: TestClient) -> None:
+    """A short or late pay leaves a discrepancy pointing at its capture: the reset
+    must delete discrepancies before captures (live Nov 7: FK failure, 500)."""
+    mock_paypal("ORDER-RESET-FK")
+    pay(client, "take-fk")
+    with SessionLocal() as db, db.begin():
+        capture = db.scalars(select(PaypalCapture)).one()
+        db.add(
+            Discrepancy(
+                id="dsc_TEST_FK",
+                milestone_id=capture.milestone_id,
+                capture_id=capture.id,
+                discrepancy_type="UNDERPAID_AND_LATE",
+                shortfall_amount=Decimal("150.00"),
+                penalty_amount=Decimal("50.00"),
+                total_remediation_amount=Decimal("200.00"),
+                ai_audit_summary="test",
+            )
+        )
+
+    reset = client.post("/api/v1/demo/reset", headers=DEMOS)
+
+    assert reset.status_code == 200, reset.text
+    assert count(Discrepancy) == 0 and count(PaypalCapture) == 0
+    assert count(TeamMemberRow) == 3  # Leash re-seeded after the full wipe
 
 
 @respx.mock

@@ -65,7 +65,9 @@ async def _ping_paypal() -> bool:
 @router.post("/demo/reset", status_code=200, dependencies=[Depends(require_demo_key)])
 def demo_reset() -> dict[str, object]:
     wiped: dict[str, int] = _reset_leash()
-    for model in (RemediationInvoice, PaypalCapture, Discrepancy, Milestone, Contract, WebhookEvent):
+    # Children before parents: invoices -> discrepancies -> captures -> milestones.
+    order = (RemediationInvoice, Discrepancy, PaypalCapture, Milestone, Contract, WebhookEvent)
+    for model in order:
         wiped[model.__tablename__] = _wipe(model)
     seed_demo(force=True)
     logger.info("demo.reset", extra={"wiped": wiped})
