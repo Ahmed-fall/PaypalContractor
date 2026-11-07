@@ -66,7 +66,10 @@ def payer_view_url(document: dict[str, Any]) -> str | None:
             return str(link["href"])
         if link.get("rel") == "payer-view":
             return str(link["href"])
-    return None
+    # Invoicing v2 has no payer-view link: the payer URL lives in detail.metadata.
+    metadata = (document.get("detail") or {}).get("metadata") or {}
+    url = metadata.get("recipient_view_url")
+    return str(url) if url else None
 
 
 def draft_invoice_id(document: dict[str, Any]) -> str:
