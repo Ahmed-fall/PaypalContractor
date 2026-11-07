@@ -28,6 +28,8 @@ services:
         value: https://fd-web.onrender.com
       - key: LEASH_ENABLED
         value: "true"
+      - key: SEED_DEMO_DATA
+        value: "true"
 
   - type: web
     name: fd-web
