@@ -8,7 +8,6 @@ Leash package is not on the trunk yet.
 
 from __future__ import annotations
 
-import importlib
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -19,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .api.errors import RequestIdMiddleware, install_error_handlers
 from .config import get_settings
 from .db.database import init_db
-from .leash_hooks import leash_enabled
+from .leash_hooks import import_optional, leash_enabled
 from .services.paypal import close_http_client as _close_paypal_http
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -44,9 +43,8 @@ def _mount_leash(app: FastAPI) -> None:
     if not leash_enabled():
         logger.info("leash.mount_skipped", extra={"reason": "LEASH_ENABLED=false"})
         return
-    try:
-        module = importlib.import_module("app.api.leash")
-    except ModuleNotFoundError:
+    module = import_optional(".api.leash")
+    if module is None:
         logger.info("leash.mount_skipped", extra={"reason": "module not present"})
         return
     router = getattr(module, "router", None)
