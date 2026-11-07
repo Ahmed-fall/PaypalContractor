@@ -3,7 +3,8 @@
 Health caches the sandbox token ping for 60 s; when PayPal is unreachable the
 endpoint answers 503 with ``PAYPAL_UNAVAILABLE`` and ``status: degraded``. } .
 ``POST /demo/reset`` wipes every table and re-seeds the Acme contract —
-judge-facing, demo-key only (A.6).
+judge-facing, demo-key only (A.6). The Leash demo state goes first (payroll runs
+reference milestones) and is re-seeded with it; Leash decisions are kept.
 """
 
 from __future__ import annotations
@@ -14,12 +15,13 @@ import time
 from typing import Any
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import inspect
 
 from ..api.deps import require_demo_key
 from ..api.errors import ApiError
 from ..db.models import Contract, Discrepancy, Milestone, PaypalCapture, RemediationInvoice, WebhookEvent
 from ..db.seed import seed_demo
-from ..leash_hooks import leash_enabled
+from ..leash_hooks import import_optional, leash_enabled
 from ..schemas.contracts import HealthResponse
 
 logger = logging.getLogger(__name__)
@@ -62,12 +64,23 @@ async def _ping_paypal() -> bool:
 
 @router.post("/demo/reset", status_code=200, dependencies=[Depends(require_demo_key)])
 def demo_reset() -> dict[str, object]:
-    wiped: dict[str, int] = {}
+    wiped: dict[str, int] = _reset_leash()
     for model in (RemediationInvoice, PaypalCapture, Discrepancy, Milestone, Contract, WebhookEvent):
         wiped[model.__tablename__] = _wipe(model)
     seed_demo(force=True)
     logger.info("demo.reset", extra={"wiped": wiped})
     return {"status": "reset", "wiped": wiped}
+
+
+def _reset_leash() -> dict[str, int]:
+    """P5's demo tables, before the Detective wipe (``payroll_runs`` -> ``milestones``)."""
+    from ..db.database import SessionLocal, engine
+
+    seed = import_optional(".leash.seed")
+    if seed is None or not inspect(engine).has_table("payroll_runs"):
+        return {}
+    with SessionLocal() as db:
+        return dict(seed.reset_leash_demo(db))
 
 
 def _wipe(model: type[Any]) -> int:

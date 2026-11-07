@@ -2,7 +2,8 @@
 
 The seed matches ``shared/fixtures/json/acme_extract.json`` so the UI shows the
 same numbers whether the backend is mocked or live. Roster, timesheets and any
-Leash fixtures belong to P5's ``shared/fixtures/leash/``, not to this module.
+Leash fixtures belong to P5's ``leash/seed.py``; ``seed_demo`` only calls it, so the
+first ``/simulator/pay`` after a deploy already finds MS-01's timesheet for H2.
 """
 
 from __future__ import annotations
@@ -14,7 +15,9 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .database import engine, utcnow
+from ..config import get_settings
+from ..leash_hooks import import_optional, leash_enabled
+from .database import Base, engine, utcnow
 from .models import Contract, Milestone
 
 logger = logging.getLogger(__name__)
@@ -64,9 +67,22 @@ def seed_terms() -> dict[str, object]:
 def seed_demo(*, force: bool = False) -> None:
     """Seed Acme + MS-01 once, or always on ``/demo/reset`` (``force=True``)."""
     with Session(engine) as db, db.begin():
-        if not force and active_contract_exists(db):
-            return
-        insert_contract(db)
+        if force or not active_contract_exists(db):
+            insert_contract(db)
+    # On boot only with SEED_DEMO_DATA (as P5's lazy seed); always on /demo/reset.
+    if leash_enabled() and (force or get_settings().seed_demo_data):
+        _seed_leash()
+
+
+def _seed_leash() -> None:
+    """P5's idempotent roster, policy v1, mapping and MS-01 timesheet, when Leash exists."""
+    seed = import_optional(".leash.seed")
+    models = import_optional(".leash.models")
+    if seed is None or models is None:
+        return
+    Base.metadata.create_all(engine, tables=models.LEASH_TABLES, checkfirst=True)
+    with Session(engine) as db:
+        seed.seed_leash_demo(db, now=utcnow())
 
 
 def insert_contract(db: Session) -> Contract:
