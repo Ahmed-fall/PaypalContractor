@@ -82,7 +82,15 @@ def mock_everything() -> None:
         )
     )
     respx.post(f"{SANDBOX}/v2/invoicing/invoices").mock(
-        return_value=Response(201, json={"id": "INV-TEST-REMEDIATION-01"})
+        # PayPal's default create response is a link, not the invoice body.
+        return_value=Response(
+            201,
+            json={
+                "rel": "self",
+                "href": f"{SANDBOX}/v2/invoicing/invoices/INV-TEST-REMEDIATION-01",
+                "method": "GET",
+            },
+        )
     )
     respx.post(f"{SANDBOX}/v2/invoicing/invoices/INV-TEST-REMEDIATION-01/send").mock(
         return_value=Response(200, json={})
@@ -108,7 +116,7 @@ def mock_everything() -> None:
 
 def pay_underpaid(client: TestClient) -> str:
     got = client.post(
-        "/simulator/pay",
+        "/api/v1/simulator/pay",
         json={
             "milestone_id": "ms_seed_01",
             "simulated_amount": "500.00",
@@ -131,13 +139,13 @@ def test_owner_remediation_send(client: TestClient) -> None:
     dsc = pay_underpaid(client)
 
     refused = client.post(
-        f"/discrepancies/{dsc}/remediate", json={"confirm_send": False}, headers=DEMOS
+        f"/api/v1/discrepancies/{dsc}/remediate", json={"confirm_send": False}, headers=DEMOS
     )
     assert refused.status_code == 409
     assert refused.json()["error"]["code"] == "REMEDIATION_NOT_CONFIRMED"
 
     accepted = client.post(
-        f"/discrepancies/{dsc}/remediate", json={"confirm_send": True}, headers=DEMOS
+        f"/api/v1/discrepancies/{dsc}/remediate", json={"confirm_send": True}, headers=DEMOS
     )
     assert accepted.status_code == 200, accepted.json()
     payload = accepted.json()
@@ -148,7 +156,7 @@ def test_owner_remediation_send(client: TestClient) -> None:
     assert invoice["status"] == "SENT"
     assert invoice["qr_code_base64"] == "Q0k="
 
-    ledger = client.get("/ledger").json()
+    ledger = client.get("/api/v1/ledger").json()
     row = ledger["rows"][0]
     assert row["discrepancy_status"] == "REMEDIATED"
     assert row["remediation_sent_by"] == "owner"
@@ -160,12 +168,12 @@ def test_repeated_remediation_is_refused(client: TestClient) -> None:
     mock_everything()
     dsc = pay_underpaid(client)
     first = client.post(
-        f"/discrepancies/{dsc}/remediate", json={"confirm_send": True}, headers=DEMOS
+        f"/api/v1/discrepancies/{dsc}/remediate", json={"confirm_send": True}, headers=DEMOS
     )
     assert first.status_code == 200
 
     again = client.post(
-        f"/discrepancies/{dsc}/remediate", json={"confirm_send": True}, headers=DEMOS
+        f"/api/v1/discrepancies/{dsc}/remediate", json={"confirm_send": True}, headers=DEMOS
     )
     assert again.status_code == 409
     assert again.json()["error"]["code"] == "ALREADY_REMEDIATED"

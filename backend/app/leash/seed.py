@@ -3,6 +3,7 @@
 The roster mirrors the demo story: Omar's payout email changed yesterday (PR-01 fires
 on his line); Sara and Youssef are long-standing. The parsed MS-01 timesheet gives
 Omar 12, Sara 10 and Youssef 8 hours. Run it twice and the row counts stay the same.
+``reset_leash_demo`` clears that state again for ``/demo/reset``.
 """
 
 from __future__ import annotations
@@ -11,13 +12,15 @@ import hashlib
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from ..db.database import new_id
 from .models import (
     ColumnMappingRow,
     LeashPolicyRow,
+    PayrollLineRow,
+    PayrollRunRow,
     TeamMemberRow,
     TimesheetEntryRow,
     TimesheetUploadRow,
@@ -143,3 +146,44 @@ def seed_leash_demo(db: Session, *, now: datetime) -> None:
                     )
                 )
     db.commit()
+
+
+# Children before parents: lines -> runs (-> milestones), entries -> uploads, members last.
+_RESET_ORDER = (
+    PayrollLineRow,
+    PayrollRunRow,
+    TimesheetEntryRow,
+    TimesheetUploadRow,
+    ColumnMappingRow,
+    TeamMemberRow,
+)
+
+
+def reset_leash_demo(db: Session) -> dict[str, int]:
+    """Delete the Leash demo state so the next take starts clean; returns rows per table.
+
+    Runs before the Detective wipe, because ``payroll_runs.milestone_id`` references
+    ``milestones``. Kept on purpose:
+
+    - ``leash_decisions``: the append-only audit log (A.3). The deleted runs and
+      lines only reference decisions; no kept row references a deleted one.
+    - ``leash_policies``: kept because every decision references its version; the
+      seeded v1 becomes the active policy again.
+
+    In-process state needs no reset: the H2/poll tasks and run locks are keyed by
+    run ids, which are fresh ULIDs and never reused, and a poller whose run is gone
+    stops on its next tick.
+    """
+    wiped: dict[str, int] = {}
+    for model in _RESET_ORDER:
+        result = db.execute(delete(model))
+        wiped[model.__tablename__] = int(getattr(result, "rowcount", 0) or 0)
+    seeded = LeashPolicyRow.version == 1
+    if db.scalars(
+        select(LeashPolicyRow.id).where(seeded, LeashPolicyRow.active.is_(False))
+    ).first():
+        # Two statements: the one-active-policy unique index must never see two rows.
+        db.execute(update(LeashPolicyRow).where(~seeded).values(active=False))
+        db.execute(update(LeashPolicyRow).where(seeded).values(active=True))
+    db.commit()
+    return wiped

@@ -8,7 +8,6 @@ Leash package is not on the trunk yet.
 
 from __future__ import annotations
 
-import importlib
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -19,11 +18,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from .api.errors import RequestIdMiddleware, install_error_handlers
 from .config import get_settings
 from .db.database import init_db
-from .leash_hooks import leash_enabled
+from .leash_hooks import import_optional, leash_enabled
 from .services.paypal import close_http_client as _close_paypal_http
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger(__name__)
+
+API_PREFIX = "/api/v1"  # A.2: every route lives under the versioned base
 
 
 @asynccontextmanager
@@ -42,9 +43,8 @@ def _mount_leash(app: FastAPI) -> None:
     if not leash_enabled():
         logger.info("leash.mount_skipped", extra={"reason": "LEASH_ENABLED=false"})
         return
-    try:
-        module = importlib.import_module("app.api.leash")
-    except ModuleNotFoundError:
+    module = import_optional(".api.leash")
+    if module is None:
         logger.info("leash.mount_skipped", extra={"reason": "module not present"})
         return
     router = getattr(module, "router", None)
@@ -80,20 +80,23 @@ def create_app() -> FastAPI:
     from .api.simulator import router as simulator_router
     from .api.webhooks import router as webhooks_router
 
-    app.include_router(contracts_router)
-    app.include_router(simulator_router)
-    app.include_router(webhooks_router)
-    app.include_router(ledger_router)
-    app.include_router(discrepancies_router)
-    app.include_router(health_router)
-    _mount_leash(app)
+    for router in (
+        contracts_router,
+        simulator_router,
+        webhooks_router,
+        ledger_router,
+        discrepancies_router,
+        health_router,
+    ):
+        app.include_router(router, prefix=API_PREFIX)
+    _mount_leash(app)  # api/leash.py already carries /api/v1/leash
 
     @app.get("/", include_in_schema=False)
     def root() -> dict[str, str]:
         return {
             "service": "the-financial-detective",
             "docs": "/docs",
-            "health": "/health",
+            "health": f"{API_PREFIX}/health",
         }
 
     return app

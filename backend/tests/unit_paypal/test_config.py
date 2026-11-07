@@ -68,3 +68,20 @@ def test_cors_origins_split() -> None:
 
 def test_secret_not_in_repr() -> None:
     assert "test-client-secret" not in repr(make_settings())
+
+
+def _luhn_valid(number: str) -> bool:
+    digits = [int(char) for char in reversed(number)]
+    total = sum(digits[0::2]) + sum(sum(divmod(2 * d, 10)) for d in digits[1::2])
+    return total % 10 == 0
+
+
+def test_luhn_helper_rejects_previous_default() -> None:
+    # The old default PayPal answered with 422 "Invalid card number".
+    assert not _luhn_valid("4032038441061188")
+
+
+def test_default_simulator_card_passes_luhn() -> None:
+    number = make_settings().simulator_card_number
+    assert number.isdigit() and len(number) == 16
+    assert _luhn_valid(number)

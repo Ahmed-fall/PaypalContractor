@@ -70,6 +70,28 @@ def _first_issue(body: Any) -> str:
     return "unexpected PayPal response"
 
 
+def _parse_body(response: httpx.Response) -> dict[str, Any]:
+    """JSON body, or ``{part name: text}`` for a ``multipart/form-data`` answer.
+
+    Invoicing v2 ``generate-qr-code`` answers multipart (one ``image`` part holding
+    the base64 PNG), not JSON.
+    """
+    if not response.content:
+        return {}
+    content_type = response.headers.get("content-type", "")
+    if not content_type.startswith("multipart/form-data"):
+        body: dict[str, Any] = response.json()
+        return body
+    boundary = content_type.partition("boundary=")[2].strip().strip('"')
+    fields: dict[str, Any] = {}
+    for part in response.text.split(f"--{boundary}"):
+        head, sep, value = part.partition("\r\n\r\n")
+        name = head.partition('name="')[2].partition('"')[0]
+        if sep and name:
+            fields[name] = value.strip()
+    return fields
+
+
 async def paypal_request(
     method: str,
     path: str,
@@ -121,7 +143,7 @@ async def paypal_request(
         )
 
         if response.status_code in (httpx.codes.OK, httpx.codes.CREATED):
-            return response.json() if response.content else {}
+            return _parse_body(response)
 
         if response.status_code == httpx.codes.UNAUTHORIZED and attempt == 0:
             get_auth_manager().invalidate()  # stale token: refresh, retry same request
