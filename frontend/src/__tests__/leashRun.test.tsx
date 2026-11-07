@@ -238,7 +238,8 @@ describe("Leash payroll run review (WP-5.5)", () => {
     await user.click(confirm); // and once more while the first is still in flight
     expect(sends(calls)).toHaveLength(1);
     expect(confirm).toBeDisabled();
-    expect(payTeam()).toBeDisabled();
+    // The open dialog hides the page (inert + aria-hidden), so reach behind it explicitly.
+    expect(screen.getByRole("button", { name: "Pay team", hidden: true })).toBeDisabled();
 
     await act(async () => release?.());
     expect(await screen.findByText("Sent to PayPal. Batch 5UXD2E8A7EBQJ")).toBeInTheDocument();
@@ -574,8 +575,9 @@ describe("Leash payroll run review (WP-5.5)", () => {
     expect(screen.getByRole("button", { name: "Exclude Sara" })).toBeEnabled();
     await user.click(payTeam());
     await screen.findByRole("dialog");
-    await waitFor(() => expect(screen.getByRole("button", { name: "Exclude Sara" })).toBeDisabled());
-    expect(screen.getByRole("button", { name: "Approve Omar" })).toBeDisabled();
+    // The open dialog hides the page (inert + aria-hidden), so reach behind it explicitly.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Exclude Sara", hidden: true })).toBeDisabled());
+    expect(screen.getByRole("button", { name: "Approve Omar", hidden: true })).toBeDisabled();
   });
 
   it("test_ticked_flags_reset_after_edits (I2)", async () => {

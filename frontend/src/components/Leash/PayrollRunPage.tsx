@@ -189,6 +189,8 @@ function RunReview({ runId }: { runId: string }) {
   const approved = useMemo(() => tickable.filter((f) => ticked.includes(f)), [tickable, ticked]);
   const blockers = run ? payBlockers(run, approved, limitPct) : [];
   const totals = run ? runTotalsCents(run) : null;
+  // busy/sending guard against double actions. confirmOpen is defense in depth: the Modal already
+  // makes the grid inert, but the dialog quotes run.total, so rows must not change under it (I1).
   const rowsBusy = busy || sending || confirmOpen;
 
   const rows = useMemo<RunGridRow[]>(
